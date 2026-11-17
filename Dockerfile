@@ -22,7 +22,7 @@ ENV SERVER_ADDRESS=0.0.0.0 \
 EXPOSE 8080
 
 # Required at runtime (never baked into the image):
-#   DB_URL, DB_USERNAME, DB_PASSOWRD
+#   DB_URL, DB_USERNAME, DB_PASSWORD
 #   JWT_PUBLIC_KEY_LOCATION=file:/etc/secrets/public.pem
 #   JWT_PRIVATE_KEY_LOCATION=file:/etc/secrets/private.pem
 ENTRYPOINT ["java", "-jar", "/app/app.jar"]

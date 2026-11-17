@@ -70,7 +70,7 @@ Flutter هو واجهة العرض؛ الباكند يرجع JSON. وحدة ال
 
 ## الإعدادات والتحقق
 
-`application.properties` يحتوي إعدادات التطبيق وسياسة الجلسات. اتصال PostgreSQL يأتي من `DB_URL` و`DB_USERNAME` و`DB_PASSOWRD` بالهجاء المعتمد. اسم profile هو `local-postgres` حاليًا، لكن عنوان الاتصال قد يشير إلى قاعدة التطوير السحابية الجديدة.
+`application.properties` يحتوي إعدادات التطبيق وسياسة الجلسات. اتصال PostgreSQL يأتي من `DB_URL` و`DB_USERNAME` و`DB_PASSWORD`. اسم profile هو `local-postgres` حاليًا، لكن عنوان الاتصال قد يشير إلى قاعدة التطوير السحابية الجديدة.
 
 ملفات Flyway في `resources/db/postgresql` تصف مخطط قاعدة البيانات. لم يتطلب دمج الحزم أي migration، وبقيت أسماء الجداول، بما فيها `identity_sessions`، وإعداد issuer وروابط APIs كما هي. لم تتغير Flutter أو قاعدة الإنتاج.
 

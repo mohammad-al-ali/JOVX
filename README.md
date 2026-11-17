@@ -20,10 +20,10 @@
 ```text
 DB_URL=jdbc:postgresql://<host>:<port>/<database>
 DB_USERNAME=<database-user>
-DB_PASSOWRD=<database-password>
+DB_PASSWORD=<database-password>
 ```
 
-الاسم `DB_PASSOWRD` مقصود كما اعتمد في المشروع. لا تحفظ القيم السرية في Git. الإعداد الافتراضي `local-postgres` يدعم عنوان PostgreSQL محليًا أو سحابيًا.
+لا تحفظ القيم السرية في Git. الإعداد الافتراضي `local-postgres` يدعم عنوان PostgreSQL محليًا أو سحابيًا.
 
 **مفاتيح توقيع الدخول (JWT):** الخادم يوقّع توكن الدخول بمفتاح خاص `private.pem` ويتحقق منه بمفتاح عام `public.pem`. الملفان لا يُرفعان إلى Git. افتراضيًا يُقرآن من مجلد `.local/identity-keys` في جهاز التطوير الأصلي؛ في أي جهاز أو خادم آخر أنشئ زوجًا جديدًا وحدّد مكانه بالمتغيرين `JWT_PUBLIC_KEY_LOCATION` و`JWT_PRIVATE_KEY_LOCATION`:
 
@@ -43,7 +43,7 @@ openssl pkey -in private.pem -pubout -out public.pem
 ```text
 DB_URL=jdbc:postgresql://<supabase-session-pooler-host>:5432/postgres?sslmode=require
 DB_USERNAME=<database-user>
-DB_PASSOWRD=<database-password>
+DB_PASSWORD=<database-password>
 JWT_PUBLIC_KEY_LOCATION=file:/etc/secrets/public.pem
 JWT_PRIVATE_KEY_LOCATION=file:/etc/secrets/private.pem
 ```
