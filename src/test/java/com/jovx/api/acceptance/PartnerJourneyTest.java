@@ -589,4 +589,154 @@ class PartnerJourneyTest {
         assertEquals(0,jdbc.queryForObject("SELECT COUNT(*) FROM users WHERE phone_e164=?",Integer.class,phone));
     }
 
+    // ---- Partner management after registration (approved 2026-11-17) ----
+    Map<String,Object> establishmentBody(String name){
+        var body=new LinkedHashMap<String,Object>();body.put("name",name);body.put("categoryId",CATEGORY);body.put("contactPhone",null);
+        body.put("branchName",name+" - فرع");body.put("cityId",CITY);body.put("addressId",ADDRESS);return body;
+    }
+    Map<String,Object> branchBody(String name,Object city,Object address){
+        var body=new LinkedHashMap<String,Object>();body.put("name",name);body.put("cityId",city);body.put("addressId",address);body.put("addressDetails","شارع 1");return body;
+    }
+    String partnerPath(Partner p){return "/api/v1/admin/partners/"+p.created().text("partnerId");}
+
+    @Test void administrationListsAndReadsPartnersOnlyWithCreateOrBranchGrant() throws Exception {
+        String root=superAccess();var owner=partner();var admin=login(account(AccountRole.ADMIN));
+        assertEquals(403,call("GET","/api/v1/admin/partners",null,admin.access()).status());
+        assertEquals(403,call("GET",partnerPath(owner),null,owner.access()).status());
+        var list=call("GET","/api/v1/admin/partners",null,root);
+        assertEquals(200,list.status());assertTrue(list.json().toString().contains(owner.created().text("partnerId")));
+        assertFalse(list.json().toString().toLowerCase(Locale.ROOT).contains("pin"));
+        assertEquals(204,roleGrants(root,"ADMIN",Set.of("partner.branch.manage")).status());
+        var detail=call("GET",partnerPath(owner),null,admin.access());
+        assertEquals(200,detail.status());assertEquals("ACTIVE",detail.text("status"));assertEquals("أحمد",detail.text("ownerName"));
+        var establishment=detail.json().path("establishments").get(0);
+        assertEquals("مطاعم اختبار",establishment.path("categoryName").asString());
+        assertEquals("حي اختبار",establishment.path("branches").get(0).path("addressName").asString());
+        assertEquals(404,call("GET","/api/v1/admin/partners/"+UUID.randomUUID(),null,root).status());
+    }
+    @Test void minimumDiscountIsAdministrationCreateOnlyAndValidated() throws Exception {
+        String root=superAccess();var owner=partner();var admin=login(account(AccountRole.ADMIN));String path=partnerPath(owner)+"/discount";
+        assertEquals(403,call("PUT",path,Map.of("discountPercent",12),owner.access()).status());
+        assertEquals(204,roleGrants(root,"ADMIN",Set.of("partner.branch.manage")).status());
+        assertEquals(403,call("PUT",path,Map.of("discountPercent",12),admin.access()).status());
+        assertEquals(204,roleGrants(root,"ADMIN",Set.of("partner.create")).status());
+        assertEquals(204,call("PUT",path,Map.of("discountPercent",12.5),admin.access()).status());
+        for(String bad:List.of("-1","101","1.234"))assertEquals(400,call("PUT",path,"{\"discountPercent\":"+bad+"}",root).status());
+        assertEquals(0,new java.math.BigDecimal("12.50").compareTo(new java.math.BigDecimal(
+            call("GET","/api/v1/partner/context",null,owner.access()).json().path("minimumDiscountPercent").asString())));
+    }
+    @Test void establishmentsAreAddedAndEditedByAdministrationOrOwnerWithoutTouchingLogin() throws Exception {
+        String root=superAccess();var owner=partner();var other=partner();
+        var byAdmin=call("POST",partnerPath(owner)+"/establishments",establishmentBody("صيدلية الإدارة"),root);
+        assertEquals(201,byAdmin.status());assertEquals("ACTIVE",byAdmin.text("status"));
+        var own=call("POST","/api/v1/partner/establishments",establishmentBody("مقهى الشريك"),owner.access());
+        assertEquals(201,own.status());
+        var context=call("GET","/api/v1/partner/context",null,owner.access()).json().toString();
+        assertTrue(context.contains(byAdmin.text("establishmentId")));assertTrue(context.contains(own.text("branchId")));
+        String phone=jdbc.queryForObject("SELECT phone_e164 FROM users WHERE id=?",String.class,owner.created().text("accountId"));
+        var edit=new LinkedHashMap<String,Object>();edit.put("name","مقهى جديد");edit.put("categoryId",CATEGORY);edit.put("contactPhone",phone);
+        assertEquals(204,call("PUT","/api/v1/partner/establishments/"+own.text("establishmentId"),edit,owner.access()).status());
+        assertEquals("مقهى جديد",jdbc.queryForObject("SELECT name FROM partner_establishments WHERE id=?",String.class,own.text("establishmentId")));
+        edit.put("contactPhone",null);
+        assertEquals(204,call("PUT",partnerPath(owner)+"/establishments/"+own.text("establishmentId"),edit,root).status());
+        assertNull(jdbc.queryForObject("SELECT contact_phone FROM partner_establishments WHERE id=?",String.class,own.text("establishmentId")));
+        assertEquals(phone,jdbc.queryForObject("SELECT phone_e164 FROM users WHERE id=?",String.class,owner.created().text("accountId")));
+        assertEquals(404,call("PUT","/api/v1/partner/establishments/"+own.text("establishmentId"),edit,other.access()).status());
+        assertEquals(404,call("PUT",partnerPath(other)+"/establishments/"+own.text("establishmentId"),edit,root).status());
+        edit.put("categoryId",UUID.randomUUID());
+        assertEquals(400,call("PUT","/api/v1/partner/establishments/"+own.text("establishmentId"),edit,owner.access()).status());
+    }
+    @Test void establishmentAddedWhilePendingIsActivatedWithThePartner() throws Exception {
+        String root=superAccess(),phone=nextPhone();var created=create(root,phone);
+        var extra=call("POST","/api/v1/admin/partners/"+created.text("partnerId")+"/establishments",establishmentBody("منشأة ثانية"),root);
+        assertEquals(201,extra.status());assertEquals("PENDING",extra.text("status"));
+        activate(root,created);
+        var context=call("GET","/api/v1/partner/context",null,login(phone,"048291").access());
+        assertEquals(2,context.json().path("establishments").size());
+    }
+    @Test void branchManagementNeedsItsOwnAdministrationGrantAndStaysWithinThePartner() throws Exception {
+        String root=superAccess();var owner=partner();var other=partner();var admin=login(account(AccountRole.ADMIN));
+        String establishment=owner.created().text("establishmentId");
+        String addPath=partnerPath(owner)+"/establishments/"+establishment+"/branches";
+        assertEquals(204,roleGrants(root,"ADMIN",Set.of("partner.create")).status());
+        assertEquals(403,call("POST",addPath,branchBody("فرع الإدارة",CITY,ADDRESS),admin.access()).status());
+        assertEquals(204,roleGrants(root,"ADMIN",Set.of("partner.branch.manage")).status());
+        var byAdmin=call("POST",addPath,branchBody("فرع الإدارة",CITY,ADDRESS),admin.access());
+        assertEquals(201,byAdmin.status());
+        var own=call("POST","/api/v1/partner/establishments/"+establishment+"/branches",branchBody("فرع الشريك",CITY,ADDRESS),owner.access());
+        assertEquals(201,own.status());
+        assertEquals(400,call("PUT","/api/v1/partner/branches/"+own.text("branchId"),branchBody("خطأ",OTHER_CITY,ADDRESS),owner.access()).status());
+        assertEquals(204,call("PUT","/api/v1/partner/branches/"+own.text("branchId"),branchBody("فرع معدل",CITY,ADDRESS),owner.access()).status());
+        assertEquals("فرع معدل",jdbc.queryForObject("SELECT name FROM partner_branches WHERE id=?",String.class,own.text("branchId")));
+        assertEquals(404,call("PUT","/api/v1/partner/branches/"+own.text("branchId"),branchBody("x",CITY,ADDRESS),other.access()).status());
+        assertEquals(404,call("POST","/api/v1/partner/establishments/"+establishment+"/branches",branchBody("x",CITY,ADDRESS),other.access()).status());
+        assertEquals(404,call("PUT",partnerPath(other)+"/branches/"+own.text("branchId")+"/status",Map.of("status","SUSPENDED"),root).status());
+        assertEquals(400,call("PUT","/api/v1/partner/branches/"+own.text("branchId")+"/status",Map.of("status","DELETED"),owner.access()).status());
+    }
+    @Test void suspendingAnyBranchIsAllowedAndBlocksEmployeesOnlyAssignedThere() throws Exception {
+        var owner=partner();String phone=nextPhone();assertEquals(201,employee(owner,phone,Set.of()).status());
+        var worker=login(phone,"012345");assertEquals(200,worker.status());
+        String status="/api/v1/partner/branches/"+owner.created().text("branchId")+"/status";
+        assertEquals(204,call("PUT",status,Map.of("status","SUSPENDED"),owner.access()).status());
+        assertEquals(204,call("PUT",status,Map.of("status","SUSPENDED"),owner.access()).status());
+        assertEquals(401,session(worker.access()).status());assertEquals(401,login(phone,"012345").status());
+        assertEquals(200,session(owner.access()).status());
+        assertEquals(204,call("PUT",status,Map.of("status","ACTIVE"),owner.access()).status());
+        assertEquals(200,login(phone,"012345").status());
+    }
+    @Test void partnerChangesOwnPinWithCurrentPinAndEveryOldTokenStops() throws Exception {
+        String root=superAccess(),phone=nextPhone();var created=create(root,phone);activate(root,created);
+        var auth=login(phone,"048291");String path="/api/v1/account/pin";
+        var wrong=call("PUT",path,Map.of("currentPin","111111","newPin","222222"),auth.access());
+        assertEquals(400,wrong.status());assertEquals("CURRENT_PIN_INCORRECT",wrong.text("code"));
+        assertEquals(200,session(auth.access()).status());
+        var same=call("PUT",path,Map.of("currentPin","048291","newPin","048291"),auth.access());
+        assertEquals(400,same.status());assertEquals("PIN_UNCHANGED",same.text("code"));
+        assertEquals(400,call("PUT",path,Map.of("currentPin","048291","newPin","12345"),auth.access()).status());
+        assertEquals(204,call("PUT",path,Map.of("currentPin","048291","newPin","739104"),auth.access()).status());
+        assertEquals(401,session(auth.access()).status());assertEquals(401,refresh(auth.refresh()).status());
+        assertEquals(401,login(phone,"048291").status());assertEquals(200,login(phone,"739104").status());
+        assertEquals(1,jdbc.queryForObject("SELECT COUNT(*) FROM identity_auth_events WHERE action='PIN_CHANGED' AND account_id=?",Integer.class,created.text("accountId")));
+    }
+    @Test void onlyPartnerAccountsUseOwnPinChange() throws Exception {
+        String root=superAccess();var owner=partner();String phone=nextPhone();employee(owner,phone,Set.of());
+        var body=Map.of("currentPin","012345","newPin","222333");
+        assertEquals(403,call("PUT","/api/v1/account/pin",body,login(phone,"012345").access()).status());
+        assertEquals(403,call("PUT","/api/v1/account/pin",Map.of("currentPin","048291","newPin","222333"),root).status());
+        assertEquals(401,call("PUT","/api/v1/account/pin",body,null).status());
+    }
+    @Test void ownerSuspendsReactivatesAndChangesEmployeePin() throws Exception {
+        var owner=partner();var other=partner();String phone=nextPhone();
+        var created=employee(owner,phone,Set.of("sale.confirm"));String user=created.text("userId");
+        var list=call("GET","/api/v1/partner/employees",null,owner.access());
+        assertEquals(200,list.status());assertEquals(1,list.json().size());
+        var view=list.json().get(0);assertEquals("ACTIVE",view.path("status").asString());assertEquals("موظف اختبار",view.path("name").asString());
+        assertTrue(view.path("permissions").toString().contains("sale.confirm"));assertFalse(list.json().toString().contains("012345"));
+        assertEquals(0,call("GET","/api/v1/partner/employees",null,other.access()).json().size());
+        var worker=login(phone,"012345");String base="/api/v1/partner/employees/"+user;
+        assertEquals(403,call("PUT",base+"/status",Map.of("status","SUSPENDED"),worker.access()).status());
+        assertEquals(404,call("PUT",base+"/status",Map.of("status","SUSPENDED"),other.access()).status());
+        assertEquals(204,call("PUT",base+"/status",Map.of("status","SUSPENDED"),owner.access()).status());
+        assertEquals(401,session(worker.access()).status());assertEquals(401,login(phone,"012345").status());
+        assertEquals("SUSPENDED",call("GET","/api/v1/partner/employees",null,owner.access()).json().get(0).path("status").asString());
+        assertEquals(204,call("PUT",base+"/status",Map.of("status","ACTIVE"),owner.access()).status());
+        assertEquals(401,session(worker.access()).status());
+        worker=login(phone,"012345");assertEquals(200,worker.status());
+        assertEquals(404,call("PUT",base+"/pin",Map.of("pin","555666"),other.access()).status());
+        assertEquals(400,call("PUT",base+"/pin",Map.of("pin","55566"),owner.access()).status());
+        assertEquals(204,call("PUT",base+"/pin",Map.of("pin","555666"),owner.access()).status());
+        assertEquals(401,session(worker.access()).status());assertEquals(401,login(phone,"012345").status());
+        assertEquals(200,login(phone,"555666").status());
+    }
+    @Test void ownerReassignsEmployeeBranchesAcrossOwnEstablishmentsOnly() throws Exception {
+        var owner=partner();var other=partner();String phone=nextPhone();String user=employee(owner,phone,Set.of()).text("userId");
+        var second=call("POST","/api/v1/partner/establishments",establishmentBody("منشأة أخرى"),owner.access());
+        String base="/api/v1/partner/employees/"+user+"/branches";
+        assertEquals(204,call("PUT",base,Map.of("branchIds",Set.of(second.text("branchId"))),owner.access()).status());
+        assertEquals(List.of(second.text("branchId")),jdbc.queryForList("SELECT branch_id FROM partner_employee_branches WHERE user_id=?",String.class,user));
+        assertEquals(400,call("PUT",base,Map.of("branchIds",Set.of(other.created().text("branchId"))),owner.access()).status());
+        assertEquals(400,call("PUT",base,Map.of("branchIds",Set.of()),owner.access()).status());
+        assertEquals(List.of(second.text("branchId")),jdbc.queryForList("SELECT branch_id FROM partner_employee_branches WHERE user_id=?",String.class,user));
+        assertEquals(200,login(phone,"012345").status());
+    }
 }

@@ -17,6 +17,27 @@ public final class PartnerModels {
 
   public record Address(UUID id, UUID cityId, String name) {}
 
+  public record BranchDetail(
+      UUID id,
+      String name,
+      UUID cityId,
+      String cityName,
+      UUID addressId,
+      String addressName,
+      String addressDetails,
+      String status) {}
+
+  public record EstablishmentDetail(
+      UUID id,
+      String name,
+      UUID categoryId,
+      String categoryName,
+      String contactPhone,
+      String status,
+      List<BranchDetail> branches) {}
+
+  public record EmployeeAssignment(UUID userId, Set<UUID> branchIds) {}
+
   public record PartnerDiscount(BigDecimal minimum) {
     public PartnerDiscount {
       valid(minimum);

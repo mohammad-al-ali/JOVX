@@ -74,8 +74,8 @@ public class LocalSessionSecurity {
         return decoder;
     }
     @Bean AuthSessionService authSessions(DataSource source,AuthenticationManager manager,JwtEncoder signer,JwtSettings jwt,
-        Clock clock,AuthSettings settings,List<LoginEligibility> policies){
-        return new AuthSessionService(source,manager,signer,jwt.issuer(),jwt.audience(),clock,settings,policies);
+        Clock clock,AuthSettings settings,List<LoginEligibility> policies,com.jovx.api.security.internal.accounts.SixDigitPinEncoder pins){
+        return new AuthSessionService(source,manager,signer,jwt.issuer(),jwt.audience(),clock,settings,policies,pins);
     }
     @Bean AttemptLimiter attemptLimiter(DataSource source,Clock clock,AuthSettings settings){return new AttemptLimiter(source,clock,settings);}
     @Bean SecurityFilterChain localApiSecurity(HttpSecurity http,AuthSessionService sessions,AttemptLimiter limiter) throws Exception {
@@ -89,6 +89,13 @@ public class LocalSessionSecurity {
                 .requestMatchers("/api/v1/session","/api/v1/reference-data","/api/v1/admin/partners","/api/v1/admin/partners/*/activate","/api/v1/partner/context").authenticated()
                 .requestMatchers("/api/v1/admin/access/catalog","/api/v1/admin/roles/*/permissions","/api/v1/admin/users/*/role",
                     "/api/v1/partner/employees","/api/v1/partner/employees/*/permissions","/api/v1/partner/employee-permissions").authenticated()
+                .requestMatchers("/api/v1/account/pin","/api/v1/admin/partners/*","/api/v1/admin/partners/*/discount",
+                    "/api/v1/admin/partners/*/establishments","/api/v1/admin/partners/*/establishments/*",
+                    "/api/v1/admin/partners/*/establishments/*/branches","/api/v1/admin/partners/*/branches/*",
+                    "/api/v1/admin/partners/*/branches/*/status","/api/v1/partner/profile","/api/v1/partner/establishments",
+                    "/api/v1/partner/establishments/*","/api/v1/partner/establishments/*/branches","/api/v1/partner/branches/*",
+                    "/api/v1/partner/branches/*/status","/api/v1/partner/employees/*/status","/api/v1/partner/employees/*/pin",
+                    "/api/v1/partner/employees/*/branches").authenticated()
                 .anyRequest().denyAll())
             .addFilterBefore(new AuthRequestFilter(limiter),UsernamePasswordAuthenticationFilter.class)
             .exceptionHandling(e->e.authenticationEntryPoint((q,r,x)->AuthRequestFilter.error(r,401,"UNAUTHENTICATED",0))

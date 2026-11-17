@@ -40,14 +40,20 @@ public final class PartnerRepository {
 
   public void insertEstablishment(
       UUID id, UUID partner, UUID category, String name, String contact) {
+    insertEstablishment(id, partner, category, name, contact, "PENDING");
+  }
+
+  public void insertEstablishment(
+      UUID id, UUID partner, UUID category, String name, String contact, String status) {
     jdbc.update(
         "INSERT INTO partner_establishments(id,partner_id,category_id,name,contact_phone,status)"
-            + " VALUES (?,?,?,?,?,'PENDING')",
+            + " VALUES (?,?,?,?,?,?)",
         id.toString(),
         partner.toString(),
         category.toString(),
         name,
-        contact);
+        contact,
+        status);
   }
 
   public void insertBranch(
@@ -79,6 +85,10 @@ public final class PartnerRepository {
             id.toString())
         .stream()
         .findFirst();
+  }
+
+  public Optional<Owner> findOwner(UUID id) {
+    return owner("id=?", id, false);
   }
 
   public Optional<Owner> lockOwner(UUID id) {
@@ -221,6 +231,133 @@ public final class PartnerRepository {
         actor.toString(),
         action,
         Timestamp.from(now));
+  }
+
+  public List<Owner> owners() {
+    return jdbc.query(
+        "SELECT id,account_id,status,minimum_discount_percent FROM partner_owners",
+        (r, i) ->
+            new Owner(
+                UUID.fromString(r.getString(1)),
+                UUID.fromString(r.getString(2)),
+                r.getString(3),
+                r.getBigDecimal(4)));
+  }
+
+  /** All establishments and branches of one partner, every status, with reference names. */
+  public List<EstablishmentDetail> establishmentDetails(UUID partner) {
+    return jdbc.query(
+        "SELECT e.id,e.name,e.category_id,c.name,e.contact_phone,e.status FROM"
+            + " partner_establishments e JOIN categories c ON c.id=e.category_id WHERE"
+            + " e.partner_id=? ORDER BY e.name,e.id",
+        (r, i) -> {
+          UUID id = UUID.fromString(r.getString(1));
+          return new EstablishmentDetail(
+              id,
+              r.getString(2),
+              UUID.fromString(r.getString(3)),
+              r.getString(4),
+              r.getString(5),
+              r.getString(6),
+              branchDetails(id));
+        },
+        partner.toString());
+  }
+
+  private List<BranchDetail> branchDetails(UUID establishment) {
+    return jdbc.query(
+        "SELECT b.id,b.name,b.city_id,c.name,b.address_id,a.name,b.address_details,b.status FROM"
+            + " partner_branches b JOIN cities c ON c.id=b.city_id JOIN addresses a ON"
+            + " a.id=b.address_id WHERE b.establishment_id=? ORDER BY b.name,b.id",
+        (r, i) ->
+            new BranchDetail(
+                UUID.fromString(r.getString(1)),
+                r.getString(2),
+                UUID.fromString(r.getString(3)),
+                r.getString(4),
+                UUID.fromString(r.getString(5)),
+                r.getString(6),
+                r.getString(7),
+                r.getString(8)),
+        establishment.toString());
+  }
+
+  /** Locks the establishment only when it belongs to the partner; returns its status. */
+  public Optional<String> lockEstablishment(UUID establishment, UUID partner) {
+    return jdbc
+        .queryForList(
+            "SELECT status FROM partner_establishments WHERE id=? AND partner_id=? FOR UPDATE",
+            String.class,
+            establishment.toString(),
+            partner.toString())
+        .stream()
+        .findFirst();
+  }
+
+  public void updateEstablishment(UUID id, String name, UUID category, String contact) {
+    jdbc.update(
+        "UPDATE partner_establishments SET name=?,category_id=?,contact_phone=? WHERE id=?",
+        name,
+        category.toString(),
+        contact,
+        id.toString());
+  }
+
+  /** Locks the branch only when it belongs to one of the partner's establishments. */
+  public Optional<String> lockBranch(UUID branch, UUID partner) {
+    return jdbc
+        .queryForList(
+            "SELECT b.status FROM partner_branches b JOIN partner_establishments e ON"
+                + " e.id=b.establishment_id WHERE b.id=? AND e.partner_id=? FOR UPDATE OF b",
+            String.class,
+            branch.toString(),
+            partner.toString())
+        .stream()
+        .findFirst();
+  }
+
+  public void updateBranch(UUID id, String name, UUID city, UUID address, String details) {
+    jdbc.update(
+        "UPDATE partner_branches SET name=?,city_id=?,address_id=?,address_details=? WHERE id=?",
+        name,
+        city.toString(),
+        address.toString(),
+        details,
+        id.toString());
+  }
+
+  public void setBranchStatus(UUID id, String status) {
+    jdbc.update("UPDATE partner_branches SET status=? WHERE id=?", status, id.toString());
+  }
+
+  public void updateDiscount(UUID partner, BigDecimal minimum) {
+    jdbc.update(
+        "UPDATE partner_owners SET minimum_discount_percent=? WHERE id=?",
+        minimum,
+        partner.toString());
+  }
+
+  public List<EmployeeAssignment> employees(UUID owner) {
+    var branches = new LinkedHashMap<UUID, Set<UUID>>();
+    jdbc.query(
+        "SELECT x.user_id,eb.branch_id FROM partner_employees x LEFT JOIN"
+            + " partner_employee_branches eb ON eb.user_id=x.user_id WHERE x.related_id=? ORDER"
+            + " BY x.user_id",
+        (org.springframework.jdbc.core.RowCallbackHandler)
+            r -> {
+              var set =
+                  branches.computeIfAbsent(
+                      UUID.fromString(r.getString(1)), k -> new LinkedHashSet<>());
+              if (r.getString(2) != null) set.add(UUID.fromString(r.getString(2)));
+            },
+        owner.toString());
+    return branches.entrySet().stream()
+        .map(e -> new EmployeeAssignment(e.getKey(), Set.copyOf(e.getValue())))
+        .toList();
+  }
+
+  public void clearBranches(UUID employee) {
+    jdbc.update("DELETE FROM partner_employee_branches WHERE user_id=?", employee.toString());
   }
 
   public boolean employeeCanLogin(UUID account) {

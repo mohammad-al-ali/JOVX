@@ -63,4 +63,71 @@ public final class PartnerDtos {
   public record ReferenceRequest(@NotBlank @Size(max = 200) String name) {}
 
   public record AddressRequest(@NotNull UUID cityId, @NotBlank @Size(max = 200) String name) {}
+
+  public record PartnerSummary(
+      UUID partnerId,
+      UUID accountId,
+      String ownerName,
+      String phone,
+      String status,
+      BigDecimal minimumDiscountPercent,
+      List<String> establishmentNames,
+      int branchCount) {}
+
+  public record PartnerDetail(
+      UUID partnerId,
+      UUID accountId,
+      String ownerName,
+      String phone,
+      String status,
+      BigDecimal minimumDiscountPercent,
+      List<EstablishmentDetail> establishments) {}
+
+  public record DiscountRequest(
+      @NotNull @DecimalMin("0") @DecimalMax("100") @Digits(integer = 3, fraction = 2)
+          BigDecimal discountPercent) {}
+
+  /** contactPhone is optional, independent of the login phone; null or blank clears it. */
+  public record EstablishmentRequest(
+      @NotBlank @Size(max = 200) String name,
+      @NotNull UUID categoryId,
+      @Size(max = 64) String contactPhone) {}
+
+  public record NewEstablishmentRequest(
+      @NotBlank @Size(max = 200) String name,
+      @NotNull UUID categoryId,
+      @Size(max = 64) String contactPhone,
+      @NotBlank @Size(max = 200) String branchName,
+      @NotNull UUID cityId,
+      @NotNull UUID addressId,
+      @Size(max = 500) String addressDetails) {}
+
+  public record EstablishmentCreatedResponse(UUID establishmentId, UUID branchId, String status) {}
+
+  public record BranchRequest(
+      @NotBlank @Size(max = 200) String name,
+      @NotNull UUID cityId,
+      @NotNull UUID addressId,
+      @Size(max = 500) String addressDetails) {}
+
+  public record BranchCreatedResponse(UUID branchId, String status) {}
+
+  public record StatusRequest(@NotNull @Pattern(regexp = "ACTIVE|SUSPENDED") String status) {}
+
+  public record EmployeeView(
+      UUID userId,
+      String name,
+      String phone,
+      String status,
+      Set<UUID> branchIds,
+      Set<String> permissions) {}
+
+  public record EmployeePinRequest(@NotNull @Pattern(regexp = "[0-9]{6}") String pin) {
+    @Override
+    public String toString() {
+      return "EmployeePin[redacted]";
+    }
+  }
+
+  public record EmployeeBranchesRequest(@NotEmpty @Size(max = 200) Set<@NotNull UUID> branchIds) {}
 }

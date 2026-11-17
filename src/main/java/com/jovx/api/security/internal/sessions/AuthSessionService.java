@@ -19,6 +19,7 @@ import org.springframework.jdbc.support.JdbcTransactionManager;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.AuthenticationException;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.oauth2.jose.jws.SignatureAlgorithm;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtClaimsSet;
@@ -39,12 +40,13 @@ public final class AuthSessionService implements com.jovx.api.security.api.Admin
     private final Clock clock;
     private final AuthSettings settings;
     private final List<LoginEligibility> eligibility;
+    private final PasswordEncoder pins;
 
     public AuthSessionService(DataSource source, AuthenticationManager authentication, JwtEncoder signer,
-        String issuer, String audience, Clock clock, AuthSettings settings, List<LoginEligibility> eligibility) {
+        String issuer, String audience, Clock clock, AuthSettings settings, List<LoginEligibility> eligibility, PasswordEncoder pins) {
         jdbc = new JdbcTemplate(source); roles = new com.jovx.api.security.internal.roles.RoleStore(source); tx = new TransactionTemplate(new JdbcTransactionManager(source));
         this.authentication = authentication; this.signer = signer; this.issuer = issuer; this.audience = audience;
-        this.clock = clock; this.settings = settings; this.eligibility = List.copyOf(eligibility);
+        this.clock = clock; this.settings = settings; this.eligibility = List.copyOf(eligibility); this.pins = pins;
     }
 
     public LoginResult login(String inputPhone, String pin) {
@@ -161,6 +163,41 @@ public final class AuthSessionService implements com.jovx.api.security.api.Admin
         if ("SUPER_ADMIN".equals(account.role())) return;
         if (!"ADMIN".equals(account.role()) || !roles.effectivePermissions(accountId).contains(permission))
             throw new AuthFailure(403,"FORBIDDEN");
+    }
+
+    @Override public void requireAny(UUID accountId, UUID sessionId, Set<String> permissions) {
+        Account account = byId(accountId);
+        if (!usable(account, session(sessionId, false), clock.instant()) || !eligible(account)) throw AuthFailure.invalid();
+        if ("SUPER_ADMIN".equals(account.role())) return;
+        if (!"ADMIN".equals(account.role()) || roles.effectivePermissions(accountId).stream().noneMatch(permissions::contains))
+            throw new AuthFailure(403,"FORBIDDEN");
+    }
+
+    /** Approved for PARTNER only: verify the current PIN, store the new one and end every session. */
+    public void changeOwnPin(UUID accountId, UUID sessionId, String currentPin, String newPin) {
+        if (newPin == null || !newPin.matches("[0-9]{6}")) throw new AuthFailure(400, "INVALID_PIN");
+        Outcome outcome = tx.execute(status -> {
+            Account account = byId(accountId);
+            Instant now = clock.instant();
+            if (!usable(account, session(sessionId, false), now) || !eligible(account)) return Outcome.fail(AuthFailure.invalid());
+            if (!"PARTNER".equals(account.role())) return Outcome.fail(new AuthFailure(403, "FORBIDDEN"));
+            if (account.lockedUntil() != null && account.lockedUntil().isAfter(now)) return Outcome.fail(locked(now, account.lockedUntil()));
+            if (!pins.matches(currentPin, account.hash())) {
+                // Same counter as login so the change form cannot be used to guess PINs; the session stays valid.
+                int attempts = (account.lockedUntil() == null ? account.failed() : 0) + 1;
+                Instant lockedUntil = attempts >= settings.maxPinAttempts() ? now.plus(settings.pinLockDuration()) : null;
+                jdbc.update("UPDATE users SET failed_pin_attempts=?,locked_until=? WHERE id=?", attempts, timestamp(lockedUntil), account.id().toString());
+                audit(account.id(), "PIN_CHANGE_FAILURE", sessionId);
+                return Outcome.fail(lockedUntil == null ? new AuthFailure(400, "CURRENT_PIN_INCORRECT") : locked(now, lockedUntil));
+            }
+            if (pins.matches(newPin, account.hash())) return Outcome.fail(new AuthFailure(400, "PIN_UNCHANGED"));
+            jdbc.update("UPDATE users SET pin_hash=?,pin_changed_at=?,failed_pin_attempts=0,locked_until=NULL WHERE id=?",
+                pins.encode(newPin), timestamp(now), account.id().toString());
+            jdbc.update("UPDATE identity_sessions SET revoked_at=? WHERE account_id=? AND revoked_at IS NULL", timestamp(now), account.id().toString());
+            audit(account.id(), "PIN_CHANGED", sessionId);
+            return Outcome.ok(null);
+        });
+        outcome.unwrap(); // Failure counters must commit before throwing.
     }
 
     private LoginResult issue(Account account, UUID sid, Instant absoluteExpiry, Instant now) {

@@ -1,0 +1,16 @@
+target/
+.idea/
+*.iml
+.vscode/
+.local/
+.data/
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.log
+.git/
+HELP.md

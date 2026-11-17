@@ -37,6 +37,38 @@ public class EmployeeController {
     employees.permissions(id(actor), sid(actor), userId, body.permissions());
   }
 
+  @GetMapping("/api/v1/partner/employees")
+  public List<EmployeeView> list(JwtAuthenticationToken actor) {
+    return employees.list(id(actor), sid(actor));
+  }
+
+  @PutMapping("/api/v1/partner/employees/{userId}/status")
+  @ResponseStatus(HttpStatus.NO_CONTENT)
+  public void status(
+      JwtAuthenticationToken actor,
+      @PathVariable UUID userId,
+      @Valid @RequestBody StatusRequest body) {
+    employees.status(id(actor), sid(actor), userId, body.status());
+  }
+
+  @PutMapping("/api/v1/partner/employees/{userId}/pin")
+  @ResponseStatus(HttpStatus.NO_CONTENT)
+  public void pin(
+      JwtAuthenticationToken actor,
+      @PathVariable UUID userId,
+      @Valid @RequestBody EmployeePinRequest body) {
+    employees.pin(id(actor), sid(actor), userId, body.pin());
+  }
+
+  @PutMapping("/api/v1/partner/employees/{userId}/branches")
+  @ResponseStatus(HttpStatus.NO_CONTENT)
+  public void branches(
+      JwtAuthenticationToken actor,
+      @PathVariable UUID userId,
+      @Valid @RequestBody EmployeeBranchesRequest body) {
+    employees.branches(id(actor), sid(actor), userId, body.branchIds());
+  }
+
   @GetMapping("/api/v1/partner/employee-permissions")
   public List<Map<String, Object>> catalog(JwtAuthenticationToken actor) {
     return employees.catalog(id(actor), sid(actor));

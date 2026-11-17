@@ -79,7 +79,8 @@ public class PartnerService {
           if ("ACTIVE".equals(owner.status())) return;
           if (!"PENDING".equals(owner.status()))
             throw error(HttpStatus.CONFLICT, "PARTNER_NOT_PENDING");
-          if (repository.establishmentCount(partner) != 1)
+          // Extra establishments added while pending are activated together with the partner.
+          if (repository.establishmentCount(partner) == 0)
             throw error(HttpStatus.CONFLICT, "INITIAL_REGISTRATION_REQUIRED");
           accounts.activate(owner.accountId());
           repository.activateRegistration(partner);
