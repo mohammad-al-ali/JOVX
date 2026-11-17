@@ -3,13 +3,13 @@
 # Tests are NOT run here: the PostgreSQL acceptance tests need the isolated local test server.
 # Run `./mvnw verify` with that server before pushing.
 
-FROM eclipse-temurin:21-jdk AS build
+# Official Maven image: no wrapper download inside the build (the wrapper's
+# distribution download failed its checksum check on Render's builder).
+FROM maven:3.9-eclipse-temurin-21 AS build
 WORKDIR /workspace
-COPY .mvn .mvn
-COPY mvnw pom.xml ./
-RUN chmod +x mvnw && ./mvnw -B -q dependency:go-offline
+COPY pom.xml ./
 COPY src src
-RUN ./mvnw -B -q package -DskipTests
+RUN mvn -B -q -DskipTests package
 
 FROM eclipse-temurin:21-jre
 WORKDIR /app

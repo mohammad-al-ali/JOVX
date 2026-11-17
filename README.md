@@ -36,7 +36,7 @@ openssl pkey -in private.pem -pubout -out public.pem
 
 ## النشر على Render (Docker)
 
-1. أنشئ Web Service من هذا المستودع، الفرع `main`، بنوع **Docker** (يُستخدم `Dockerfile` في الجذر).
+1. أنشئ Web Service من هذا المستودع، الفرع `main`، بنوع **Docker** (يُستخدم `Dockerfile` في الجذر؛ البناء بصورة Maven الرسمية دون تنزيل wrapper).
 2. في **Secret Files** أضف `public.pem` و`private.pem` (زوج خاص بـRender، لا تعيد استخدام مفاتيح جهازك).
 3. في **Environment** أضف:
 
