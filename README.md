@@ -8,7 +8,8 @@
 
 - `src/main/java/com/jovx/api/security`: المستخدمون وPIN والدخول والجلسات والأدوار والصلاحيات.
 - `src/main/java/com/jovx/api/partners`: الشركاء والمنشآت والفروع وموظفو الشركاء وقوائم التسجيل، بتنظيم controller/service/repository/model/dto/config.
-- `src/main/resources/db/postgresql`: ترحيلات Flyway V1 وV2 وV3؛ لا تُعدّل ترحيلًا سبق تطبيقه. V3 تضيف صلاحية الإدارة `partner.branch.manage`.
+- `src/main/java/com/jovx/api/releases`: إصدارات التطبيقات وسياسة التحديث من داخل التطبيق.
+- `src/main/resources/db/postgresql`: ترحيلات Flyway V1 إلى V4؛ لا تُعدّل ترحيلًا سبق تطبيقه. V3 تضيف صلاحية الإدارة `partner.branch.manage`.
 - `src/test`: اختبارات السلوك والتكامل وحدود الوحدات.
 
 [شرح البنية وتدفق إنشاء الشريك](docs/backend-structure-ar.md).
@@ -77,6 +78,22 @@ JOVX_MIGRATION_PASSWORD
 | تغيير PIN الشريك | `PUT /api/v1/account/pin` (`currentPin`, `newPin`) | الشريك فقط؛ ينهي كل جلساته |
 
 يُسمح بإيقاف أي فرع؛ الموظف المكلف بفروع موقوفة فقط لا يستطيع الدخول. إيقاف الموظف أو تغيير PIN له ينهي جلساته، وإعادة التفعيل تتطلب دخولًا جديدًا. منشأة تضاف لشريك معلق تبقى معلقة وتُفعّل معه. هاتف التواصل مستقل عن هاتف الدخول. إعادة ضبط PIN الشريك من الإدارة مؤجلة.
+
+## إصدارات التطبيقات والتحديث من داخل التطبيق
+
+البناء التلقائي (CI) ينشر لكل تطبيق ملف `version.json` على العنوان `{RELEASES_MANIFEST_BASE_URL}/{admin|member}/android/version.json`، ومعه ملف APK تحت `RELEASES_DOWNLOAD_URL_PREFIX`. الخادم لا يقرأ إلا هذا المصدر المحدد في الإعدادات، ويرفض أي رابط تنزيل خارج البادئة المحددة.
+
+| العملية | المسار | من يملكها |
+|---|---|---|
+| فحص التحديث (عام) | `GET /api/v1/app-updates?app=member&platform=android&build=123` | أي تطبيق، دون دخول |
+| الإصدارات والحد الأدنى | `GET /api/v1/admin/app-releases/{app}` | Super Admin أو `app.release.manage` |
+| آخر بناء من version.json | `GET /api/v1/admin/app-releases/{app}/manifest` | نفس الصلاحية |
+| استيراده كمسودة | `POST /api/v1/admin/app-releases/{app}/import` | نفس الصلاحية |
+| السياسة (اختياري، إجباري، أو اختياري حتى تاريخ) | `PUT /api/v1/admin/app-releases/releases/{id}/policy` | نفس الصلاحية |
+| نشر أو إيقاف إصدار | `POST .../releases/{id}/publish`، `POST .../releases/{id}/withdraw` | نفس الصلاحية |
+| أقل إصدار مدعوم | `PUT /api/v1/admin/app-releases/{app}/min-supported` | نفس الصلاحية |
+
+الجواب `NONE` أو `OPTIONAL` أو `REQUIRED`، ومعه الرابط وبصمة SHA-256. يصبح التحديث إجباريًا في ثلاث حالات: إذا كان الإصدار أقل من الحد الأدنى المدعوم، أو كان أي إصدار أحدث منشور بوضع إجباري، أو انقضى الموعد النهائي لتحديث اختياري. المسودات والإصدارات الموقوفة لا تُعرض على التطبيقات. وتطبيق V4 لازم قبل نشر هذا الإصدار من الخادم.
 
 ## البناء والاختبارات
 

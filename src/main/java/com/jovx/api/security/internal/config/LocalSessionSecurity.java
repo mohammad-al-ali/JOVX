@@ -85,6 +85,12 @@ public class LocalSessionSecurity {
             .authorizeHttpRequests(a->a.dispatcherTypeMatchers(jakarta.servlet.DispatcherType.ERROR).permitAll()
                 .requestMatchers("/actuator/health").permitAll()
                 .requestMatchers(org.springframework.http.HttpMethod.POST,"/api/v1/auth/login","/api/v1/auth/refresh","/api/v1/auth/logout").permitAll()
+                // Public update check: a required update may have to block before login.
+                .requestMatchers(org.springframework.http.HttpMethod.GET,"/api/v1/app-updates").permitAll()
+                .requestMatchers("/api/v1/admin/app-releases/*","/api/v1/admin/app-releases/*/manifest",
+                    "/api/v1/admin/app-releases/*/import","/api/v1/admin/app-releases/*/min-supported",
+                    "/api/v1/admin/app-releases/releases/*/policy","/api/v1/admin/app-releases/releases/*/publish",
+                    "/api/v1/admin/app-releases/releases/*/withdraw").authenticated()
                 .requestMatchers("/api/v1/reference-data/cities","/api/v1/reference-data/addresses","/api/v1/reference-data/categories").authenticated()
                 .requestMatchers("/api/v1/session","/api/v1/reference-data","/api/v1/admin/partners","/api/v1/admin/partners/*/activate","/api/v1/partner/context").authenticated()
                 .requestMatchers("/api/v1/admin/access/catalog","/api/v1/admin/roles/*/permissions","/api/v1/admin/users/*/role",

@@ -48,6 +48,7 @@ class PartnerJourneyTest {
     @Autowired JdbcAccountStore accounts;
     @org.springframework.test.context.bean.override.convention.TestBean(name="identityDataSource",methodName="testDataSource") DataSource dataSource;
     @org.springframework.test.context.bean.override.convention.TestBean(name="identityClock",methodName="testClock") Clock clock;
+    @org.springframework.test.context.bean.override.convention.TestBean(name="manifestClient",methodName="testManifests") com.jovx.api.releases.service.ManifestClient manifestClient;
     JdbcTemplate jdbc;
     final HttpClient client=HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
 
@@ -738,5 +739,95 @@ class PartnerJourneyTest {
         assertEquals(400,call("PUT",base,Map.of("branchIds",Set.of()),owner.access()).status());
         assertEquals(List.of(second.text("branchId")),jdbc.queryForList("SELECT branch_id FROM partner_employee_branches WHERE user_id=?",String.class,user));
         assertEquals(200,login(phone,"012345").status());
+    }
+
+    // ---- App releases and in-app update policy (approved 2026-11-17) ----
+    static volatile Optional<com.jovx.api.releases.model.ReleaseModels.ReleaseManifest> MANIFEST=Optional.empty();
+    static com.jovx.api.releases.service.ManifestClient testManifests(){return (app,platform)->MANIFEST;}
+    static void manifest(int build){
+        MANIFEST=Optional.of(new com.jovx.api.releases.model.ReleaseModels.ReleaseManifest(
+            com.jovx.api.releases.model.ReleaseModels.AppKind.MEMBER,com.jovx.api.releases.model.ReleaseModels.Platform.ANDROID,
+            "0.18."+build,build,"https://github.com/o/jovx-releases/releases/download/member-"+build+"/app.apk",
+            "c".repeat(64),4_000_000L,"ملاحظات "+build,"abc1234"));
+    }
+    void resetReleases(){
+        jdbc.update("DELETE FROM app_release_events");jdbc.update("DELETE FROM app_releases");
+        jdbc.update("UPDATE app_update_settings SET min_supported_build=0");MANIFEST=Optional.empty();
+    }
+    Response check(int build) throws Exception {return call("GET","/api/v1/app-updates?app=member&platform=android&build="+build,null,null);}
+    String importBuild(String access,int build) throws Exception {
+        manifest(build);var r=call("POST","/api/v1/admin/app-releases/member/import",null,access);
+        assertEquals(200,r.status());assertEquals("DRAFT",r.text("status"));return r.text("id");
+    }
+    Response releaseAction(String access,String id,String action) throws Exception {
+        return call("POST","/api/v1/admin/app-releases/releases/"+id+"/"+action,null,access);
+    }
+    Response releasePolicy(String access,String id,String mode,String requiredAfter) throws Exception {
+        var body=new LinkedHashMap<String,Object>();body.put("mode",mode);body.put("requiredAfter",requiredAfter);
+        return call("PUT","/api/v1/admin/app-releases/releases/"+id+"/policy",body,access);
+    }
+
+    @Test void publicUpdateCheckFollowsTheAdministrationPolicy() throws Exception {
+        resetReleases();String root=superAccess();
+        assertEquals("NONE",check(100).text("action"));
+        String id=importBuild(root,101);
+        assertEquals("NONE",check(100).text("action"),"drafts are never offered");
+        assertEquals(204,releaseAction(root,id,"publish").status());
+        var optional=check(100);
+        assertEquals("OPTIONAL",optional.text("action"));assertEquals(101,optional.json().path("latestBuildNumber").asInt());
+        assertEquals("c".repeat(64),optional.text("sha256"));
+        assertEquals("NONE",check(101).text("action"));
+
+        String deadline=START.plus(Duration.ofDays(2)).toString();
+        assertEquals(204,releasePolicy(root,id,"OPTIONAL",deadline).status());
+        assertEquals("OPTIONAL",check(100).text("action"));assertFalse(check(100).text("requiredAfter").isBlank());
+        TIME.advance(Duration.ofDays(3));
+        assertEquals("REQUIRED",check(100).text("action"),"deadline passed");
+        TIME.instant=START;
+
+        assertEquals(204,releasePolicy(root,id,"REQUIRED",null).status());
+        assertEquals("REQUIRED",check(100).text("action"));
+        assertEquals(400,releasePolicy(root,id,"REQUIRED",deadline).status());
+    }
+    @Test void minimumSupportedBuildForcesOlderAppsAndCannotOutrunPublishedBuilds() throws Exception {
+        resetReleases();String root=superAccess();
+        String id=importBuild(root,201);releaseAction(root,id,"publish");
+        var tooHigh=call("PUT","/api/v1/admin/app-releases/member/min-supported",Map.of("minSupportedBuild",202),root);
+        assertEquals(409,tooHigh.status());assertEquals("MIN_BUILD_NOT_PUBLISHED",tooHigh.text("code"));
+        assertEquals(204,call("PUT","/api/v1/admin/app-releases/member/min-supported",Map.of("minSupportedBuild",201),root).status());
+        assertEquals("REQUIRED",check(200).text("action"));
+        var blocked=releaseAction(root,id,"withdraw");
+        assertEquals(409,blocked.status());assertEquals("LOWER_MIN_SUPPORTED_FIRST",blocked.text("code"));
+        call("PUT","/api/v1/admin/app-releases/member/min-supported",Map.of("minSupportedBuild",0),root);
+        assertEquals(204,releaseAction(root,id,"withdraw").status());
+        assertEquals("NONE",check(200).text("action"),"withdrawn builds are no longer offered");
+        assertEquals(409,releaseAction(root,id,"publish").status());
+    }
+    @Test void importIsIdempotentAndManifestStateIsVisible() throws Exception {
+        resetReleases();String root=superAccess();
+        var missing=call("GET","/api/v1/admin/app-releases/member/manifest",null,root);
+        assertEquals(503,missing.status());assertEquals("MANIFEST_NOT_CONFIGURED",missing.text("code"));
+        manifest(301);
+        var view=call("GET","/api/v1/admin/app-releases/member/manifest",null,root);
+        assertEquals(301,view.json().path("buildNumber").asInt());assertFalse(view.json().path("imported").asBoolean());
+        String first=importBuild(root,301),second=importBuild(root,301);
+        assertEquals(first,second);
+        assertTrue(call("GET","/api/v1/admin/app-releases/member/manifest",null,root).json().path("imported").asBoolean());
+        var overview=call("GET","/api/v1/admin/app-releases/member",null,root);
+        assertEquals(1,overview.json().path("releases").size());
+    }
+    @Test void onlySuperAdminOrGrantedAdminManagesReleases() throws Exception {
+        resetReleases();String root=superAccess();var admin=login(account(AccountRole.ADMIN));var owner=partner();
+        manifest(401);
+        for(String token:List.of(admin.access(),owner.access()))
+            assertEquals(403,call("POST","/api/v1/admin/app-releases/member/import",null,token).status());
+        assertEquals(401,call("POST","/api/v1/admin/app-releases/member/import",null,null).status());
+        assertEquals(204,roleGrants(root,"ADMIN",Set.of("partner.create")).status());
+        assertEquals(403,call("GET","/api/v1/admin/app-releases/member",null,admin.access()).status());
+        assertEquals(204,roleGrants(root,"ADMIN",Set.of("app.release.manage")).status());
+        String id=importBuild(admin.access(),401);
+        assertEquals(204,releaseAction(admin.access(),id,"publish").status());
+        assertEquals(400,call("GET","/api/v1/app-updates?app=shop&platform=android&build=1",null,null).status());
+        assertEquals(1,jdbc.queryForObject("SELECT COUNT(*) FROM app_release_events WHERE action='RELEASE_PUBLISHED'",Integer.class));
     }
 }
