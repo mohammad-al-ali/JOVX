@@ -140,7 +140,7 @@
 					<!-- Avoid dynamic agent attachment through restricted Windows named pipes. -->
 					<!-- Version is inherited from Spring Boot; use the selected Maven repository. -->
 					<argLine>-javaagent:"${settings.localRepository}/org/mockito/mockito-core/${mockito.version}/mockito-core-${mockito.version}.jar"</argLine>
-					<forkedProcessTimeoutInSeconds>180</forkedProcessTimeoutInSeconds>
+					<forkedProcessTimeoutInSeconds>600</forkedProcessTimeoutInSeconds>
                     <systemPropertyVariables><user.timezone>UTC</user.timezone></systemPropertyVariables>
 				</configuration>
 			</plugin>

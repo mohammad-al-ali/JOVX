@@ -29,7 +29,7 @@ import org.springframework.security.oauth2.jwt.JwsHeader;
 import org.springframework.transaction.support.TransactionTemplate;
 
 public final class AuthSessionService implements com.jovx.api.security.api.AdministrationAccess, com.jovx.api.security.api.ActorAccess {
-    private static final Set<String> ROLES = Set.of("PARTNER", "PARTNER_EMPLOYEE", "ADMIN", "SUPER_ADMIN");
+    private static final Set<String> ROLES = Set.of("PARTNER", "PARTNER_EMPLOYEE", "ADMIN", "SUPER_ADMIN", "MEMBER");
     private final com.jovx.api.security.internal.roles.RoleStore roles;
     private final JdbcTemplate jdbc;
     private final TransactionTemplate tx;

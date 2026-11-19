@@ -6,5 +6,8 @@ import java.util.*;
 public interface AccountDirectory {
     Map<UUID, AccountSummary> summaries(Collection<UUID> accountIds);
 
+    /** Accounts of one role whose name contains the text or whose phone contains its digits (>=3). */
+    List<UUID> search(String role, String text, int limit);
+
     record AccountSummary(UUID id, String name, String phone, String status) { }
 }

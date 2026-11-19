@@ -378,6 +378,24 @@ public final class PartnerRepository {
         account);
   }
 
+  /** Guest directory: active establishments of active partners with at least one active branch. */
+  public List<PublicEstablishment> publicDirectory() {
+    var cities = new HashMap<UUID, List<String>>();
+    jdbc.query(
+        "SELECT DISTINCT b.establishment_id,c.name FROM partner_branches b JOIN cities c ON c.id=b.city_id"
+            + " WHERE b.status='ACTIVE' ORDER BY c.name",
+        (org.springframework.jdbc.core.RowCallbackHandler)
+            r -> cities.computeIfAbsent(UUID.fromString(r.getString(1)), k -> new ArrayList<>()).add(r.getString(2)));
+    return jdbc.query(
+        "SELECT e.id,e.name,k.name,p.minimum_discount_percent,e.contact_phone FROM partner_establishments e"
+            + " JOIN partner_owners p ON p.id=e.partner_id JOIN categories k ON k.id=e.category_id"
+            + " WHERE p.status='ACTIVE' AND e.status='ACTIVE' ORDER BY k.name,e.name",
+        (r, i) -> {
+          var id = UUID.fromString(r.getString(1));
+          return new PublicEstablishment(id, r.getString(2), r.getString(3), r.getBigDecimal(4),
+              r.getString(5), List.copyOf(cities.getOrDefault(id, List.of())));
+        }).stream().filter(e -> !e.cities().isEmpty()).toList();
+  }
   public boolean hasOwnerAccount(UUID account) {
     return exists("SELECT EXISTS(SELECT 1 FROM partner_owners WHERE account_id=?)", account);
   }

@@ -10,15 +10,17 @@ import org.springframework.web.filter.OncePerRequestFilter;
 
 /** Bounds credential payloads including chunked requests, and never trusts client-supplied forwarding headers. */
 final class AuthRequestFilter extends OncePerRequestFilter {
+    /** Public card claim: same IP limits and payload bound as login. */
+    static final String CLAIM="/api/v1/member/claim";
     private final AttemptLimiter limiter;
     AuthRequestFilter(AttemptLimiter limiter){this.limiter=limiter;}
     @Override protected void doFilterInternal(HttpServletRequest request,HttpServletResponse response,FilterChain chain) throws ServletException,IOException {
         response.setHeader("Cache-Control","no-store");
         String path=request.getServletPath();
-        if(!"POST".equals(request.getMethod()) || !java.util.Set.of("/api/v1/auth/login","/api/v1/auth/refresh","/api/v1/auth/logout").contains(path)){
+        if(!"POST".equals(request.getMethod()) || !java.util.Set.of("/api/v1/auth/login","/api/v1/auth/refresh","/api/v1/auth/logout",CLAIM).contains(path)){
             forward(request,response,chain); return;
         }
-        try {limiter.consume(path.endsWith("login")?"login":"token",request.getRemoteAddr());}
+        try {limiter.consume(path.endsWith("login")?"login":CLAIM.equals(path)?"claim":"token",request.getRemoteAddr());}
         catch(AuthFailure ex){error(response,ex.status(),ex.code(),ex.retrySeconds());return;}
         catch(DataAccessException ex){error(response,503,"AUTH_UNAVAILABLE",0);return;}
         byte[] bytes=request.getInputStream().readNBytes(4097);

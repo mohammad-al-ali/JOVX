@@ -54,4 +54,7 @@ public final class PartnerModels {
         throw new IllegalArgumentException("INVALID_DISCOUNT");
     }
   }
+
+  public record PublicEstablishment(
+      UUID id, String name, String category, java.math.BigDecimal discountPercent, String contactPhone, List<String> cities) {}
 }

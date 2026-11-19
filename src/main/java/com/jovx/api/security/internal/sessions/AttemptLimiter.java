@@ -18,7 +18,7 @@ public final class AttemptLimiter {
         this.clock = clock; this.settings = settings;
     }
     public void consume(String operation, String address) {
-        boolean login = "login".equals(operation);
+        boolean login = "login".equals(operation) || "claim".equals(operation);
         int limit = login ? settings.loginIpLimit() : settings.tokenIpLimit();
         Duration window = login ? settings.loginIpWindow() : settings.tokenIpWindow();
         String bucket = TokenSupport.digest(operation + ":" + address);

@@ -23,4 +23,17 @@ final class JdbcAccountDirectory implements AccountDirectory {
             },keys.toArray());
         return result;
     }
+    public List<UUID> search(String role,String text,int limit){
+        if(text==null || text.isBlank()) return List.of();
+        String name=text.strip().toLowerCase(Locale.ROOT).replace("\\","\\\\").replace("%","\\%").replace("_","\\_");
+        String digits=text.replaceAll("[^0-9]","");
+        // A local 09... number is stored as +9639...; match on the part after the leading zero.
+        if(digits.startsWith("0")) digits=digits.substring(1);
+        String phone=digits.length()>=3?"%"+digits+"%":null;
+        return jdbc.query("""
+            SELECT u.id FROM users u JOIN roles r ON r.id=u.role_id
+            WHERE r.\"key\"=? AND (lower(u.name) LIKE ? ESCAPE '\\' OR (CAST(? AS varchar) IS NOT NULL AND u.phone_e164 LIKE ?))
+            ORDER BY u.created_at DESC LIMIT ?
+            """,(r,i)->UUID.fromString(r.getString(1)),role,"%"+name+"%",phone,phone,Math.max(1,Math.min(limit,100)));
+    }
 }

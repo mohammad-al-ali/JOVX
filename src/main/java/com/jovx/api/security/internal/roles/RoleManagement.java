@@ -60,7 +60,7 @@ public final class RoleManagement {
             var current=users.getFirst();
             if(roleKey.equals(current.get("key"))) return;
             // Affiliation creation/transfer is a domain command, not a naked role update.
-            if(Set.of("PARTNER","PARTNER_EMPLOYEE","ADMIN_EMPLOYEE").contains(roleKey)
+            if(Set.of("PARTNER","PARTNER_EMPLOYEE","ADMIN_EMPLOYEE","MEMBER").contains(roleKey)
                 || constraints.stream().anyMatch(p->!p.permits(target,roleKey)))
                 throw new AuthFailure(409,"ROLE_REQUIRES_DOMAIN_PROVISIONING");
             if("SUPER_ADMIN".equals(current.get("key"))) {

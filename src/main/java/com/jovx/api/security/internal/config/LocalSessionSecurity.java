@@ -87,6 +87,13 @@ public class LocalSessionSecurity {
                 .requestMatchers(org.springframework.http.HttpMethod.POST,"/api/v1/auth/login","/api/v1/auth/refresh","/api/v1/auth/logout").permitAll()
                 // Public update check: a required update may have to block before login.
                 .requestMatchers(org.springframework.http.HttpMethod.GET,"/api/v1/app-updates").permitAll()
+                // Guest browsing and first-PIN card claim (plan decision 44); the claim is rate limited.
+                .requestMatchers(org.springframework.http.HttpMethod.GET,"/api/v1/public/partners","/api/v1/public/membership-plans").permitAll()
+                .requestMatchers(org.springframework.http.HttpMethod.POST,"/api/v1/member/claim").permitAll()
+                .requestMatchers("/api/v1/admin/membership-plans","/api/v1/admin/membership-plans/*","/api/v1/admin/member-cards",
+                    "/api/v1/admin/member-cards/batches","/api/v1/admin/members","/api/v1/admin/members/*",
+                    "/api/v1/admin/members/*/renewals","/api/v1/admin/members/*/card/suspension","/api/v1/admin/members/*/pin",
+                    "/api/v1/member/me","/api/v1/member/scan-token","/api/v1/member/points","/api/v1/member/points/history").authenticated()
                 .requestMatchers("/api/v1/admin/app-releases/*","/api/v1/admin/app-releases/*/manifest",
                     "/api/v1/admin/app-releases/*/import","/api/v1/admin/app-releases/*/min-supported",
                     "/api/v1/admin/app-releases/releases/*/policy","/api/v1/admin/app-releases/releases/*/publish",

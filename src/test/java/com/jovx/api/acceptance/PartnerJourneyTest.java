@@ -478,7 +478,10 @@ class PartnerJourneyTest {
         assertEquals(204,call("PUT",path,Map.of("roleKey","ADMIN"),root).status());
         var auth=login(target);assertEquals(200,auth.status());
         assertEquals("ADMIN",auth.json().path("account").path("role").asString());
-        assertEquals(204,call("PUT",path,Map.of("roleKey","MEMBER"),root).status());
+        var member=call("PUT",path,Map.of("roleKey","MEMBER"),root);
+        assertEquals(409,member.status(),"a MEMBER needs a membership record: sold, not assigned");
+        assertEquals("ROLE_REQUIRES_DOMAIN_PROVISIONING",member.text("code"));
+        assertEquals(204,call("PUT",path,Map.of("roleKey","SUPER_ADMIN"),root).status());
         assertEquals(401,session(auth.access()).status());assertEquals(401,refresh(auth.refresh()).status());
         assertEquals(400,call("PUT",path,Map.of("roleKey","NOT_DEFINED"),root).status());
     }
@@ -829,5 +832,172 @@ class PartnerJourneyTest {
         assertEquals(204,releaseAction(admin.access(),id,"publish").status());
         assertEquals(400,call("GET","/api/v1/app-updates?app=shop&platform=android&build=1",null,null).status());
         assertEquals(1,jdbc.queryForObject("SELECT COUNT(*) FROM app_release_events WHERE action='RELEASE_PUBLISHED'",Integer.class));
+    }
+
+    // ---- membership foundation (plan decisions 43-57) ----
+    String plan(String access,String name,int months,boolean active) throws Exception {
+        var r=call("POST","/api/v1/admin/membership-plans",Map.of("name",name,"priceAmount",1900,"currency","SYP",
+            "durationMonths",months,"familySlots",5,"active",active),access);
+        assertEquals(201,r.status(),r.json().toString());return r.text("id");
+    }
+    String stockCard(String access) throws Exception {
+        String code="JVXC-"+UUID.randomUUID().toString().replace("-","").substring(0,16).toUpperCase(Locale.ROOT);
+        var r=call("POST","/api/v1/admin/member-cards/batches",Map.of("batchLabel","دفعة اختبار","codes",List.of(code)),access);
+        assertEquals(200,r.status());assertEquals(1,r.json().path("added").asInt());return code;
+    }
+    Response sell(String access,UUID request,String phone,String code,String planId) throws Exception {
+        return call("POST","/api/v1/admin/members",Map.of("requestId",request,"name","عضو اختبار","phone",phone,"cardCode",code,
+            "planId",planId,"payment",Map.of("method","CASH","reference","إيصال 7")),access);
+    }
+    Response claim(String code,String phone,String pin) throws Exception {
+        return call("POST","/api/v1/member/claim",Map.of("cardCode",code,"phone",phone,"pin",pin),null);
+    }
+    record SoldMember(String id,String phone,String code){}
+    SoldMember claimedMember(String root,String planId) throws Exception {
+        String phone=nextPhone(),code=stockCard(root);
+        var sold=sell(root,UUID.randomUUID(),phone,code,planId);assertEquals(200,sold.status(),sold.json().toString());
+        assertEquals(204,claim(code,phone,"048291").status());
+        return new SoldMember(sold.text("memberId"),phone,code);
+    }
+    Instant instantOf(Response r,String field){return Instant.parse(r.text(field));}
+
+    @Test void soldMemberClaimsPinWithTheCardThenLogsInAndGetsAShortLivedQr() throws Exception {
+        String root=superAccess(),planId=plan(root,"بلاتينية "+UUID.randomUUID(),6,true),phone=nextPhone(),code=stockCard(root);
+        UUID request=UUID.randomUUID();
+        var sold=sell(root,request,phone,code,planId);
+        assertEquals(200,sold.status(),sold.json().toString());
+        assertTrue(sold.text("memberNumber").matches("JVX-[0-9]{6,}"));
+        assertEquals(com.jovx.api.membership.model.MembershipModels.Terms.end(START,6),instantOf(sold,"expiresAt"));
+        assertEquals(1900,sold.json().path("payment").path("amount").asLong());
+        assertEquals("SYP",sold.json().path("payment").path("currency").asString());
+        var replay=sell(root,request,phone,code,planId);
+        assertEquals(200,replay.status());assertEquals(sold.text("memberId"),replay.text("memberId"),"a retried sale returns the first result");
+        assertEquals(1,jdbc.queryForObject("SELECT COUNT(*) FROM membership_payments WHERE member_account_id=?",Integer.class,sold.text("memberId")));
+
+        assertEquals(401,login(phone,"048291").status(),"no PIN before the card claim");
+        assertEquals("CARD_CLAIM_REJECTED",claim(code,nextPhone(),"048291").text("code"),"phone must match the seller's record");
+        assertEquals("CARD_CLAIM_REJECTED",claim("UNKNOWN-CARD-1",phone,"048291").text("code"));
+        assertEquals(204,claim(code,phone,"048291").status());
+        var again=claim(code,phone,"112233");
+        assertEquals(409,again.status());assertEquals("ACCOUNT_ALREADY_CLAIMED",again.text("code"));
+
+        var member=login(phone,"048291");
+        assertEquals(200,member.status());assertEquals("MEMBER",member.json().path("account").path("role").asString());
+        var me=call("GET","/api/v1/member/me",null,member.access());
+        assertEquals(200,me.status());assertEquals("ACTIVE",me.text("state"));assertTrue(me.json().path("canShowQr").asBoolean());
+        String masked=me.json().path("card").path("maskedCode").asString();
+        assertTrue(masked.endsWith(code.substring(code.length()-4)));assertFalse(masked.contains(code),"full card code never leaves the server");
+        var token=call("POST","/api/v1/member/scan-token",null,member.access());
+        assertEquals(200,token.status());assertTrue(token.text("token").startsWith("JX2."));
+        assertEquals(TIME.instant().plusSeconds(60),instantOf(token,"expiresAt"));
+        assertEquals(0,jdbc.queryForObject("SELECT COUNT(*) FROM member_scan_tokens WHERE token_digest=?",Integer.class,token.text("token")),"only the digest is stored");
+        call("POST","/api/v1/member/scan-token",null,member.access());
+        assertEquals(1,jdbc.queryForObject("SELECT COUNT(*) FROM member_scan_tokens WHERE member_account_id=?",Integer.class,sold.text("memberId")),"a new QR replaces the old one");
+        var points=call("GET","/api/v1/member/points",null,member.access());
+        assertEquals(0,points.json().path("balance").asLong());assertFalse(points.json().path("frozen").asBoolean());
+        assertEquals(0,call("GET","/api/v1/member/points/history",null,member.access()).json().size());
+    }
+
+    @Test void renewalAddsToTheRemainingTermOrStartsTodayAndAnExpiredMemberSeesAFrozenState() throws Exception {
+        String root=superAccess(),planId=plan(root,"تجديد "+UUID.randomUUID(),6,true);
+        var m=claimedMember(root,planId);
+        Instant first=com.jovx.api.membership.model.MembershipModels.Terms.end(START,6);
+        TIME.advance(Duration.ofDays(10));
+        var renewed=call("POST","/api/v1/admin/members/"+m.id()+"/renewals",Map.of("requestId",UUID.randomUUID(),"planId",planId,
+            "payment",Map.of("method","TRANSFER")),superAccess());
+        assertEquals(200,renewed.status(),renewed.json().toString());
+        Instant second=com.jovx.api.membership.model.MembershipModels.Terms.end(first,6);
+        assertEquals(second,instantOf(renewed,"expiresAt"),"remaining days are kept");
+
+        TIME.instant=second.plus(Duration.ofDays(3));
+        var member=login(m.phone(),"048291");
+        assertEquals(200,member.status(),"an expired member still logs in");
+        assertEquals("EXPIRED",call("GET","/api/v1/member/me",null,member.access()).text("state"));
+        var qr=call("POST","/api/v1/member/scan-token",null,member.access());
+        assertEquals(409,qr.status());assertEquals("MEMBERSHIP_EXPIRED",qr.text("code"));
+        assertTrue(call("GET","/api/v1/member/points",null,member.access()).json().path("frozen").asBoolean());
+
+        var late=call("POST","/api/v1/admin/members/"+m.id()+"/renewals",Map.of("requestId",UUID.randomUUID(),"planId",planId,
+            "payment",Map.of("method","CASH")),superAccess());
+        assertEquals(com.jovx.api.membership.model.MembershipModels.Terms.end(TIME.instant(),6),instantOf(late,"expiresAt"),"an expired term restarts today");
+        var detail=call("GET","/api/v1/admin/members/"+m.id(),null,superAccess());
+        assertEquals(3,detail.json().path("payments").size());assertTrue(detail.json().path("claimed").asBoolean());
+    }
+
+    @Test void cardStockRejectsDuplicatesAndAFailedSaleLeavesNothingBehind() throws Exception {
+        String root=superAccess(),planId=plan(root,"مخزون "+UUID.randomUUID(),6,true),code=stockCard(root);
+        var batch=call("POST","/api/v1/admin/member-cards/batches",Map.of("batchLabel","ثانية","codes",List.of(code," NEW-"+UUID.randomUUID().toString().substring(0,8)+" ","bad code!")),root);
+        assertEquals(1,batch.json().path("added").asInt());
+        assertEquals(code,batch.json().path("alreadyRegistered").get(0).asString());
+        assertEquals("bad code!",batch.json().path("invalid").get(0).asString());
+
+        var taken=claimedMember(root,planId);
+        var duplicatePhone=sell(root,UUID.randomUUID(),taken.phone(),code,planId);
+        assertEquals(409,duplicatePhone.status());assertEquals("PHONE_ALREADY_REGISTERED",duplicatePhone.text("code"));
+        assertEquals("IN_STOCK",jdbc.queryForObject("SELECT status FROM member_cards WHERE code=?",String.class,code),"rolled back");
+        var soldCard=sell(root,UUID.randomUUID(),nextPhone(),taken.code(),planId);
+        assertEquals(409,soldCard.status());assertEquals("CARD_NOT_AVAILABLE",soldCard.text("code"));
+        String inactive=plan(root,"موقوفة "+UUID.randomUUID(),6,false);
+        assertEquals("PLAN_INACTIVE",sell(root,UUID.randomUUID(),nextPhone(),code,inactive).text("code"));
+        var publicPlans=call("GET","/api/v1/public/membership-plans",null,null);
+        assertEquals(200,publicPlans.status());
+        assertTrue(publicPlans.json().toString().contains(planId));assertFalse(publicPlans.json().toString().contains(inactive));
+    }
+
+    @Test void suspendedCardStopsTheQrButNotTheLoginAndAdministrationResetsThePin() throws Exception {
+        String root=superAccess(),planId=plan(root,"إيقاف "+UUID.randomUUID(),6,true);
+        var m=claimedMember(root,planId);
+        var member=login(m.phone(),"048291");
+        assertEquals(200,call("POST","/api/v1/member/scan-token",null,member.access()).status());
+        assertEquals(204,call("POST","/api/v1/admin/members/"+m.id()+"/card/suspension",null,root).status());
+        assertEquals(409,call("POST","/api/v1/admin/members/"+m.id()+"/card/suspension",null,root).status());
+        assertEquals(0,jdbc.queryForObject("SELECT COUNT(*) FROM member_scan_tokens WHERE member_account_id=? AND consumed_at IS NULL",Integer.class,m.id()));
+        assertEquals("CARD_NOT_ACTIVE",call("POST","/api/v1/member/scan-token",null,member.access()).text("code"));
+        assertEquals("SUSPENDED",call("GET","/api/v1/member/me",null,member.access()).json().path("card").path("status").asString());
+
+        assertEquals(204,call("PUT","/api/v1/admin/members/"+m.id()+"/pin",Map.of("pin","553311"),root).status());
+        assertEquals(401,call("GET","/api/v1/member/me",null,member.access()).status(),"reset ends every session");
+        assertEquals(401,login(m.phone(),"048291").status());
+        assertEquals(200,login(m.phone(),"553311").status());
+
+        String phone=nextPhone(),code=stockCard(root);
+        String unclaimed=sell(root,UUID.randomUUID(),phone,code,planId).text("memberId");
+        var refused=call("PUT","/api/v1/admin/members/"+unclaimed+"/pin",Map.of("pin","553311"),root);
+        assertEquals(409,refused.status());assertEquals("MEMBER_NOT_CLAIMED",refused.text("code"));
+        assertEquals(204,call("POST","/api/v1/admin/members/"+unclaimed+"/card/suspension",null,root).status());
+        assertEquals("CARD_SUSPENDED",claim(code,phone,"048291").text("code"));
+    }
+
+    @Test void onlySuperAdminOrAdminWithMemberManageSellsAndSearchesMembers() throws Exception {
+        String root=superAccess(),planId=plan(root,"صلاحيات "+UUID.randomUUID(),6,true);
+        var m=claimedMember(root,planId);
+        var admin=login(account(AccountRole.ADMIN));var owner=partner();var member=login(m.phone(),"048291");
+        for(String token:List.of(admin.access(),owner.access(),member.access()))
+            assertEquals(403,call("GET","/api/v1/admin/members",null,token).status());
+        assertEquals(401,call("GET","/api/v1/admin/members",null,null).status());
+        assertEquals(401,call("GET","/api/v1/member/me",null,null).status());
+        assertEquals(403,call("GET","/api/v1/member/me",null,root).status());
+        assertEquals(204,roleGrants(root,"ADMIN",Set.of("member.manage")).status());
+        var found=call("GET","/api/v1/admin/members?q="+m.phone().substring(m.phone().length()-6),null,admin.access());
+        assertEquals(200,found.status());assertEquals(m.id(),found.json().get(0).path("id").asString());
+        var byNumber=call("GET","/api/v1/admin/members/"+m.id(),null,admin.access()).text("memberNumber");
+        assertEquals(m.id(),call("GET","/api/v1/admin/members?q="+byNumber,null,admin.access()).json().get(0).path("id").asString());
+        var sold=sell(admin.access(),UUID.randomUUID(),nextPhone(),stockCard(admin.access()),planId);
+        assertEquals(200,sold.status());
+        assertEquals(1,jdbc.queryForObject("SELECT COUNT(*) FROM membership_events WHERE member_account_id=? AND action='MEMBERSHIP_SOLD'",
+            Integer.class,sold.text("memberId")));
+    }
+
+    @Test void guestsSeeOnlyActivePartnersWithTheirDiscount() throws Exception {
+        partner();
+        String admin=superAccess(),pendingName="معلّق "+UUID.randomUUID();
+        var body=registration(nextPhone());body.put("name",pendingName);body.put("branchName","فرع");
+        assertEquals(201,call("POST","/api/v1/admin/partners",body,admin).status());
+        var directory=call("GET","/api/v1/public/partners",null,null);
+        assertEquals(200,directory.status());
+        String text=directory.json().toString();
+        assertTrue(text.contains("مطعم أحمد"));assertFalse(text.contains(pendingName),"pending partners are hidden");
+        assertFalse(text.contains("account"),"no account data in the public list");
+        assertEquals(10,directory.json().get(0).path("discountPercent").asInt());
     }
 }
