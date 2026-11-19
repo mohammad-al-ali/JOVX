@@ -29,7 +29,6 @@ import org.springframework.security.oauth2.jwt.JwsHeader;
 import org.springframework.transaction.support.TransactionTemplate;
 
 public final class AuthSessionService implements com.jovx.api.security.api.AdministrationAccess, com.jovx.api.security.api.ActorAccess {
-    private static final Set<String> ROLES = Set.of("PARTNER", "PARTNER_EMPLOYEE", "ADMIN", "SUPER_ADMIN", "MEMBER");
     private final com.jovx.api.security.internal.roles.RoleStore roles;
     private final JdbcTemplate jdbc;
     private final TransactionTemplate tx;
@@ -61,7 +60,7 @@ public final class AuthSessionService implements com.jovx.api.security.api.Admin
                 catch (AuthenticationException ignored) { /* Keep Spring's unknown-user timing protection. */ }
                 return Outcome.fail(AuthFailure.invalid());
             }
-            if (!ROLES.contains(account.role()) || !"ACTIVE".equals(account.status())) return Outcome.fail(AuthFailure.invalid());
+            if (!loginRole(account.role()) || !"ACTIVE".equals(account.status())) return Outcome.fail(AuthFailure.invalid());
             Instant now = clock.instant();
             if (account.lockedUntil() != null && account.lockedUntil().isAfter(now)) {
                 return Outcome.fail(locked(now, account.lockedUntil()));
@@ -214,14 +213,17 @@ public final class AuthSessionService implements com.jovx.api.security.api.Admin
             new TokenPair(access, refresh, Duration.between(now, accessExpiry).toSeconds(), accessExpiry.getEpochSecond(), "bearer", absoluteExpiry));
     }
 
+    /** A role can log in only when a registered LoginEligibility policy supports it. */
+    private boolean loginRole(String role) {
+        return eligibility.stream().anyMatch(p -> p.supports(role));
+    }
     private boolean eligible(Account account) {
         if (account == null) return false;
-        if ("ADMIN".equals(account.role()) || "SUPER_ADMIN".equals(account.role())) return true;
         var policies = eligibility.stream().filter(p -> p.supports(account.role())).toList();
         return !policies.isEmpty() && policies.stream().allMatch(p -> p.allowed(account.id(), account.role()));
     }
     private boolean usable(Account account, Session session, Instant now) {
-        return account != null && session != null && ROLES.contains(account.role()) && "ACTIVE".equals(account.status())
+        return account != null && session != null && loginRole(account.role()) && "ACTIVE".equals(account.status())
             && session.accountId().equals(account.id()) && session.revoked() == null && session.expires().isAfter(now)
             && session.credentialTag().equals(TokenSupport.digest(account.hash()));
     }

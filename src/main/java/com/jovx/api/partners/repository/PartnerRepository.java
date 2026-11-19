@@ -233,15 +233,57 @@ public final class PartnerRepository {
         Timestamp.from(now));
   }
 
-  public List<Owner> owners() {
+  /**
+   * One page of partners with establishment names and branch count in a single query.
+   * With a search text, matches an establishment name or one of the given owner accounts.
+   */
+  public List<OwnerListing> ownerPage(
+      String search, Collection<UUID> matchingAccounts, int offset, int limit) {
+    var sql =
+        new StringBuilder(
+            "SELECT p.id,p.account_id,p.status,p.minimum_discount_percent,"
+                + " (SELECT array_agg(e.name ORDER BY e.name) FROM partner_establishments e"
+                + " WHERE e.partner_id=p.id),"
+                + " (SELECT COUNT(*) FROM partner_branches b JOIN partner_establishments e ON"
+                + " e.id=b.establishment_id WHERE e.partner_id=p.id),"
+                + " (SELECT min(e.name) FROM partner_establishments e WHERE e.partner_id=p.id) AS"
+                + " sort_name FROM partner_owners p");
+    var args = new ArrayList<Object>();
+    if (search != null) {
+      sql.append(
+          " WHERE (EXISTS (SELECT 1 FROM partner_establishments e WHERE e.partner_id=p.id AND"
+              + " lower(e.name) LIKE ? ESCAPE '\\')");
+      args.add(
+          "%"
+              + search.toLowerCase(Locale.ROOT)
+                  .replace("\\", "\\\\")
+                  .replace("%", "\\%")
+                  .replace("_", "\\_")
+              + "%");
+      if (!matchingAccounts.isEmpty()) {
+        sql.append(" OR p.account_id IN (")
+            .append(String.join(",", Collections.nCopies(matchingAccounts.size(), "?")))
+            .append(")");
+        matchingAccounts.forEach(a -> args.add(a.toString()));
+      }
+      sql.append(")");
+    }
+    sql.append(" ORDER BY sort_name NULLS LAST, p.id OFFSET ? LIMIT ?");
+    args.add(Math.max(0, offset));
+    args.add(Math.max(1, Math.min(limit, 100)));
     return jdbc.query(
-        "SELECT id,account_id,status,minimum_discount_percent FROM partner_owners",
-        (r, i) ->
-            new Owner(
-                UUID.fromString(r.getString(1)),
-                UUID.fromString(r.getString(2)),
-                r.getString(3),
-                r.getBigDecimal(4)));
+        sql.toString(),
+        (r, i) -> {
+          var names = r.getArray(5);
+          return new OwnerListing(
+              UUID.fromString(r.getString(1)),
+              UUID.fromString(r.getString(2)),
+              r.getString(3),
+              r.getBigDecimal(4),
+              names == null ? List.of() : List.of((String[]) names.getArray()),
+              r.getInt(6));
+        },
+        args.toArray());
   }
 
   /** All establishments and branches of one partner, every status, with reference names. */

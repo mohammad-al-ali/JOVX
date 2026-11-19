@@ -1,7 +1,5 @@
 package com.jovx.api.membership.service;
 
-import static com.jovx.api.membership.service.MembershipAdminService.fail;
-
 import com.jovx.api.membership.dto.MembershipDtos.*;
 import com.jovx.api.membership.model.MembershipModels.*;
 import com.jovx.api.membership.repository.MembershipRepository;
@@ -13,7 +11,8 @@ import java.time.Instant;
 import java.util.*;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Profile;
-import org.springframework.http.HttpStatus;
+import com.jovx.api.common.DomainException;
+import com.jovx.api.common.DomainException.Kind;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -41,12 +40,12 @@ public class MemberSelfService {
   public void claim(ClaimRequest r) {
     tx.executeWithoutResult(s -> {
       String code = Terms.cardCode(r.cardCode());
-      if (code == null) throw fail(HttpStatus.BAD_REQUEST, CLAIM_REJECTED);
-      Card card = repository.cardByCodeForUpdate(code).orElseThrow(() -> fail(HttpStatus.BAD_REQUEST, CLAIM_REJECTED));
+      if (code == null) throw fail(Kind.INVALID, CLAIM_REJECTED);
+      Card card = repository.cardByCodeForUpdate(code).orElseThrow(() -> fail(Kind.INVALID, CLAIM_REJECTED));
       if (card.member() == null || !accounts.phoneMatches(card.member(), r.phone()))
-        throw fail(HttpStatus.BAD_REQUEST, CLAIM_REJECTED);
-      if (card.status() == CardStatus.SUSPENDED) throw fail(HttpStatus.CONFLICT, "CARD_SUSPENDED");
-      if (!accounts.unclaimed(card.member())) throw fail(HttpStatus.CONFLICT, "ACCOUNT_ALREADY_CLAIMED");
+        throw fail(Kind.INVALID, CLAIM_REJECTED);
+      if (card.status() == CardStatus.SUSPENDED) throw fail(Kind.CONFLICT, "CARD_SUSPENDED");
+      if (!accounts.unclaimed(card.member())) throw fail(Kind.CONFLICT, "ACCOUNT_ALREADY_CLAIMED");
       accounts.claim(card.member(), r.pin());
       repository.event(card.member(), card.member(), "ACCOUNT_CLAIMED", clock.instant());
     });
@@ -59,7 +58,7 @@ public class MemberSelfService {
   public MemberProfile profile(UUID actor, UUID sid) {
     return tx.execute(s -> {
       actors.requireRole(actor, sid, "MEMBER");
-      Member m = repository.member(actor).orElseThrow(() -> fail(HttpStatus.NOT_FOUND, "MEMBER_NOT_FOUND"));
+      Member m = repository.member(actor).orElseThrow(() -> fail(Kind.NOT_FOUND, "MEMBER_NOT_FOUND"));
       var who = directory.summaries(List.of(actor)).get(actor);
       var card = repository.cardOf(actor);
       var state = Terms.state(clock.instant(), m.expiresAt());
@@ -74,11 +73,11 @@ public class MemberSelfService {
   public ScanToken scanToken(UUID actor, UUID sid) {
     return tx.execute(s -> {
       actors.requireRole(actor, sid, "MEMBER");
-      Member m = repository.memberForUpdate(actor).orElseThrow(() -> fail(HttpStatus.NOT_FOUND, "MEMBER_NOT_FOUND"));
+      Member m = repository.memberForUpdate(actor).orElseThrow(() -> fail(Kind.NOT_FOUND, "MEMBER_NOT_FOUND"));
       Instant now = clock.instant();
-      if (Terms.state(now, m.expiresAt()) != MembershipState.ACTIVE) throw fail(HttpStatus.CONFLICT, "MEMBERSHIP_EXPIRED");
+      if (Terms.state(now, m.expiresAt()) != MembershipState.ACTIVE) throw fail(Kind.CONFLICT, "MEMBERSHIP_EXPIRED");
       Card card = repository.cardOf(actor).filter(c -> c.status() == CardStatus.ASSIGNED)
-          .orElseThrow(() -> fail(HttpStatus.CONFLICT, "CARD_NOT_ACTIVE"));
+          .orElseThrow(() -> fail(Kind.CONFLICT, "CARD_NOT_ACTIVE"));
       byte[] secret = new byte[32];
       RANDOM.nextBytes(secret);
       String token = "JX2." + Base64.getUrlEncoder().withoutPadding().encodeToString(secret);
@@ -94,5 +93,9 @@ public class MemberSelfService {
     } catch (java.security.NoSuchAlgorithmException ex) {
       throw new IllegalStateException(ex);
     }
+  }
+
+  private static DomainException fail(Kind kind, String code) {
+    return new DomainException(kind, code);
   }
 }

@@ -1,8 +1,9 @@
 package com.jovx.api.points.service;
 
 import com.jovx.api.membership.api.MemberStanding;
+import com.jovx.api.points.dto.PointsDtos.Balance;
+import com.jovx.api.points.dto.PointsDtos.HistoryEntry;
 import com.jovx.api.points.repository.PointsRepository;
-import com.jovx.api.points.repository.PointsRepository.Entry;
 import java.util.*;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Service;
@@ -22,9 +23,9 @@ public class PointsQueryService {
     return new Balance(repository.balance(member), !standing.termActive(member));
   }
 
-  public List<Entry> history(UUID member, int offset, int limit) {
-    return repository.history(member, offset, limit);
+  public List<HistoryEntry> history(UUID member, int offset, int limit) {
+    return repository.history(member, offset, limit).stream()
+        .map(e -> new HistoryEntry(e.id(), e.delta(), e.balanceAfter(), e.kind(), e.referenceId(), e.createdAt()))
+        .toList();
   }
-
-  public record Balance(long balance, boolean frozen) {}
 }

@@ -10,10 +10,10 @@ import java.util.*;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Profile;
 import org.springframework.dao.DuplicateKeyException;
-import org.springframework.http.HttpStatus;
+import com.jovx.api.common.DomainException;
+import com.jovx.api.common.DomainException.Kind;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
-import org.springframework.web.server.ResponseStatusException;
 
 /** Administration use cases; every command re-checks member.manage inside its transaction. */
 @Service
@@ -48,7 +48,7 @@ public class MembershipAdminService {
       access.require(actor, sid, PERMISSION);
       var plan = plan(UUID.randomUUID(), r);
       try { repository.insertPlan(plan, clock.instant()); }
-      catch (DuplicateKeyException ex) { throw fail(HttpStatus.CONFLICT, "PLAN_NAME_EXISTS"); }
+      catch (DuplicateKeyException ex) { throw fail(Kind.CONFLICT, "PLAN_NAME_EXISTS"); }
       return PlanView.of(plan);
     });
   }
@@ -57,15 +57,15 @@ public class MembershipAdminService {
     return tx.execute(s -> {
       access.require(actor, sid, PERMISSION);
       var plan = plan(id, r);
-      try { if (!repository.updatePlan(plan)) throw fail(HttpStatus.NOT_FOUND, "PLAN_NOT_FOUND"); }
-      catch (DuplicateKeyException ex) { throw fail(HttpStatus.CONFLICT, "PLAN_NAME_EXISTS"); }
+      try { if (!repository.updatePlan(plan)) throw fail(Kind.NOT_FOUND, "PLAN_NOT_FOUND"); }
+      catch (DuplicateKeyException ex) { throw fail(Kind.CONFLICT, "PLAN_NAME_EXISTS"); }
       return PlanView.of(plan);
     });
   }
 
   private static Plan plan(UUID id, PlanRequest r) {
     String name = r.name().strip().replaceAll("\\s+", " ");
-    if (name.isEmpty()) throw fail(HttpStatus.BAD_REQUEST, "INVALID_REQUEST");
+    if (name.isEmpty()) throw fail(Kind.INVALID, "INVALID_REQUEST");
     return new Plan(id, name, r.priceAmount(), r.currency(), r.durationMonths(), r.familySlots(), r.active());
   }
 
@@ -75,7 +75,7 @@ public class MembershipAdminService {
     return tx.execute(s -> {
       access.require(actor, sid, PERMISSION);
       String batch = r.batchLabel().strip();
-      if (batch.isEmpty()) throw fail(HttpStatus.BAD_REQUEST, "INVALID_REQUEST");
+      if (batch.isEmpty()) throw fail(Kind.INVALID, "INVALID_REQUEST");
       var invalid = new ArrayList<String>();
       var existing = new ArrayList<String>();
       var seen = new LinkedHashSet<String>();
@@ -104,16 +104,26 @@ public class MembershipAdminService {
   public MembershipTermResult sell(UUID actor, UUID sid, SellMembershipRequest r) {
     return tx.execute(s -> {
       access.require(actor, sid, PERMISSION);
-      var replay = repository.paymentByRequest(r.requestId());
-      if (replay.isPresent()) return replayed(replay.get(), PaymentKind.SALE);
-      Plan plan = activePlan(r.planId());
       String code = Terms.cardCode(r.cardCode());
-      if (code == null) throw fail(HttpStatus.BAD_REQUEST, "INVALID_CARD_CODE");
-      Card card = repository.cardByCodeForUpdate(code).orElseThrow(() -> fail(HttpStatus.NOT_FOUND, "CARD_NOT_FOUND"));
-      if (card.status() != CardStatus.IN_STOCK) throw fail(HttpStatus.CONFLICT, "CARD_NOT_AVAILABLE");
+      if (code == null) throw fail(Kind.INVALID, "INVALID_CARD_CODE");
+      // Concurrent retries of one form wait here, then see the committed payment and replay it.
+      repository.lockRequest(r.requestId());
+      var replay = repository.paymentByRequest(r.requestId());
+      if (replay.isPresent()) {
+        var p = replay.get();
+        boolean same = p.kind() == PaymentKind.SALE && p.planId().equals(r.planId())
+            && p.method() == r.payment().method()
+            && repository.cardOf(p.member()).map(c -> c.code().equals(code)).orElse(false)
+            && accounts.phoneMatches(p.member(), r.phone());
+        if (!same) throw fail(Kind.CONFLICT, "REQUEST_ID_REUSED");
+        return replayed(p, PaymentKind.SALE);
+      }
+      Plan plan = activePlan(r.planId());
+      Card card = repository.cardByCodeForUpdate(code).orElseThrow(() -> fail(Kind.NOT_FOUND, "CARD_NOT_FOUND"));
+      if (card.status() != CardStatus.IN_STOCK) throw fail(Kind.CONFLICT, "CARD_NOT_AVAILABLE");
       final UUID member;
       try { member = accounts.createUnclaimed(r.name(), r.phone()); }
-      catch (MemberAccounts.PhoneAlreadyRegistered ex) { throw fail(HttpStatus.CONFLICT, "PHONE_ALREADY_REGISTERED"); }
+      catch (MemberAccounts.PhoneAlreadyRegistered ex) { throw fail(Kind.CONFLICT, "PHONE_ALREADY_REGISTERED"); }
       Instant now = clock.instant();
       Instant expires = Terms.end(now, plan.durationMonths());
       String number = Terms.memberNumber(Long.parseLong(repository.nextMemberNumberValue()));
@@ -129,12 +139,16 @@ public class MembershipAdminService {
   public MembershipTermResult renew(UUID actor, UUID sid, UUID memberId, RenewMembershipRequest r) {
     return tx.execute(s -> {
       access.require(actor, sid, PERMISSION);
+      repository.lockRequest(r.requestId());
       var replay = repository.paymentByRequest(r.requestId());
       if (replay.isPresent()) {
-        if (!replay.get().member().equals(memberId)) throw fail(HttpStatus.CONFLICT, "REQUEST_ID_REUSED");
-        return replayed(replay.get(), PaymentKind.RENEWAL);
+        var p = replay.get();
+        // The same request id with a different member, plan or method is a different operation.
+        if (!p.member().equals(memberId) || !p.planId().equals(r.planId()) || p.method() != r.payment().method())
+          throw fail(Kind.CONFLICT, "REQUEST_ID_REUSED");
+        return replayed(p, PaymentKind.RENEWAL);
       }
-      Member member = repository.memberForUpdate(memberId).orElseThrow(() -> fail(HttpStatus.NOT_FOUND, "MEMBER_NOT_FOUND"));
+      Member member = repository.memberForUpdate(memberId).orElseThrow(() -> fail(Kind.NOT_FOUND, "MEMBER_NOT_FOUND"));
       Plan plan = activePlan(r.planId());
       Instant now = clock.instant();
       Instant expires = Terms.end(Terms.renewalStart(now, member.expiresAt()), plan.durationMonths());
@@ -147,15 +161,15 @@ public class MembershipAdminService {
   }
 
   private MembershipTermResult replayed(Payment p, PaymentKind expected) {
-    if (p.kind() != expected) throw fail(HttpStatus.CONFLICT, "REQUEST_ID_REUSED");
+    if (p.kind() != expected) throw fail(Kind.CONFLICT, "REQUEST_ID_REUSED");
     Member m = repository.member(p.member()).orElseThrow();
     String planName = repository.plan(p.planId()).map(Plan::name).orElse("");
     return new MembershipTermResult(m.accountId(), m.memberNumber(), p.newExpiresAt(), view(p, planName, Map.of()));
   }
 
   private Plan activePlan(UUID id) {
-    Plan plan = repository.plan(id).orElseThrow(() -> fail(HttpStatus.NOT_FOUND, "PLAN_NOT_FOUND"));
-    if (!plan.active()) throw fail(HttpStatus.CONFLICT, "PLAN_INACTIVE");
+    Plan plan = repository.plan(id).orElseThrow(() -> fail(Kind.NOT_FOUND, "PLAN_NOT_FOUND"));
+    if (!plan.active()) throw fail(Kind.CONFLICT, "PLAN_INACTIVE");
     return plan;
   }
 
@@ -172,9 +186,9 @@ public class MembershipAdminService {
   public void suspendCard(UUID actor, UUID sid, UUID memberId) {
     tx.executeWithoutResult(s -> {
       access.require(actor, sid, PERMISSION);
-      repository.memberForUpdate(memberId).orElseThrow(() -> fail(HttpStatus.NOT_FOUND, "MEMBER_NOT_FOUND"));
+      repository.memberForUpdate(memberId).orElseThrow(() -> fail(Kind.NOT_FOUND, "MEMBER_NOT_FOUND"));
       Instant now = clock.instant();
-      if (!repository.suspendCard(memberId, now)) throw fail(HttpStatus.CONFLICT, "CARD_NOT_ACTIVE");
+      if (!repository.suspendCard(memberId, now)) throw fail(Kind.CONFLICT, "CARD_NOT_ACTIVE");
       repository.dropScanTokens(memberId);
       repository.event(memberId, actor, "CARD_SUSPENDED", now);
     });
@@ -183,7 +197,7 @@ public class MembershipAdminService {
   public void resetPin(UUID actor, UUID sid, UUID memberId, String pin) {
     tx.executeWithoutResult(s -> {
       access.require(actor, sid, PERMISSION);
-      repository.memberForUpdate(memberId).orElseThrow(() -> fail(HttpStatus.NOT_FOUND, "MEMBER_NOT_FOUND"));
+      repository.memberForUpdate(memberId).orElseThrow(() -> fail(Kind.NOT_FOUND, "MEMBER_NOT_FOUND"));
       accounts.resetPin(memberId, pin);
       repository.event(memberId, actor, "PIN_RESET", clock.instant());
     });
@@ -223,7 +237,7 @@ public class MembershipAdminService {
   public MemberDetail detail(UUID actor, UUID sid, UUID memberId) {
     return tx.execute(s -> {
       access.require(actor, sid, PERMISSION);
-      Member m = repository.member(memberId).orElseThrow(() -> fail(HttpStatus.NOT_FOUND, "MEMBER_NOT_FOUND"));
+      Member m = repository.member(memberId).orElseThrow(() -> fail(Kind.NOT_FOUND, "MEMBER_NOT_FOUND"));
       var payments = repository.payments(memberId);
       var people = new HashSet<UUID>();
       people.add(memberId);
@@ -251,7 +265,7 @@ public class MembershipAdminService {
         p.previousExpiresAt(), p.newExpiresAt(), p.recordedBy(), by == null ? null : by.name(), p.createdAt());
   }
 
-  static ResponseStatusException fail(HttpStatus status, String code) {
-    return new ResponseStatusException(status, code);
+  private static DomainException fail(Kind status, String code) {
+    return new DomainException(status, code);
   }
 }

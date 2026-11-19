@@ -9,6 +9,15 @@ public final class PartnerModels {
 
   public record Owner(UUID id, UUID accountId, String status, BigDecimal minimum) {}
 
+  /** One row of the administration partner list, built by a single aggregate query. */
+  public record OwnerListing(
+      UUID id,
+      UUID accountId,
+      String status,
+      BigDecimal minimum,
+      List<String> establishmentNames,
+      int branchCount) {}
+
   public record Branch(UUID id, String name) {}
 
   public record Establishment(UUID id, String name, List<Branch> branches) {}

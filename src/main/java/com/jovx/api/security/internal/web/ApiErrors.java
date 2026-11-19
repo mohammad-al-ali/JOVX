@@ -23,7 +23,17 @@ public class ApiErrors {
     @ExceptionHandler(DuplicateKeyException.class) ResponseEntity<Problem> duplicate(){return error(409,"CONFLICT",0);}
     @ExceptionHandler({DataAccessException.class,AuthenticationServiceException.class}) ResponseEntity<Problem> database(){return error(503,"SERVICE_UNAVAILABLE",0);}
     @ExceptionHandler(AccessDeniedException.class) ResponseEntity<Problem> denied(){return error(403,"FORBIDDEN",0);}
-    @ExceptionHandler(ResponseStatusException.class) ResponseEntity<Problem> domain(ResponseStatusException ex){
+    /** The only place a business failure kind becomes an HTTP status. */
+    @ExceptionHandler(com.jovx.api.common.DomainException.class)
+    ResponseEntity<Problem> business(com.jovx.api.common.DomainException ex){return error(status(ex.kind()),ex.code(),0);}
+    static int status(com.jovx.api.common.DomainException.Kind kind){
+        return switch(kind){
+            case INVALID -> 400; case FORBIDDEN -> 403; case NOT_FOUND -> 404; case CONFLICT -> 409;
+            case UPSTREAM_FAILED -> 502; case UNAVAILABLE -> 503;
+        };
+    }
+    /** Controllers may still reject malformed transport input (e.g. an unknown path value). */
+    @ExceptionHandler(ResponseStatusException.class) ResponseEntity<Problem> transport(ResponseStatusException ex){
         return error(ex.getStatusCode().value(),ex.getReason()==null?"REQUEST_FAILED":ex.getReason(),0);
     }
     private static ResponseEntity<Problem> error(int status,String code,long retry){

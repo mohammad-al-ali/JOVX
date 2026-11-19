@@ -24,6 +24,8 @@ DB_USERNAME=<database-user>
 DB_PASSWORD=<database-password>
 ```
 
+اختياري: `DB_POOL_SIZE` لحجم مجمّع الاتصالات (الافتراضي 4، مناسب لحدود Supabase المجانية).
+
 لا تحفظ القيم السرية في Git. الإعداد الافتراضي `local-postgres` يدعم عنوان PostgreSQL محليًا أو سحابيًا.
 
 **مفاتيح توقيع الدخول (JWT):** الخادم يوقّع توكن الدخول بمفتاح خاص `private.pem` ويتحقق منه بمفتاح عام `public.pem`. الملفان لا يُرفعان إلى Git. افتراضيًا يُقرآن من مجلد `.local/identity-keys` في جهاز التطوير الأصلي؛ في أي جهاز أو خادم آخر أنشئ زوجًا جديدًا وحدّد مكانه بالمتغيرين `JWT_PUBLIC_KEY_LOCATION` و`JWT_PRIVATE_KEY_LOCATION`:
@@ -69,7 +71,7 @@ JOVX_MIGRATION_PASSWORD
 
 | العملية | المسار | من يملكها |
 |---|---|---|
-| قائمة الشركاء وتفاصيل شريك | `GET /api/v1/admin/partners`، `GET /api/v1/admin/partners/{id}` | Super Admin أو Admin بـ`partner.create` أو `partner.branch.manage` |
+| قائمة الشركاء (صفحات: `limit` افتراضيًا 20 وحدها الأقصى 100، و`offset`، والبحث `q` بالاسم أو الهاتف أو اسم المنشأة) وتفاصيل شريك | `GET /api/v1/admin/partners`، `GET /api/v1/admin/partners/{id}` | Super Admin أو Admin بـ`partner.create` أو `partner.branch.manage` |
 | الحد الأدنى للخصم | `PUT /api/v1/admin/partners/{id}/discount` | Super Admin أو `partner.create` فقط |
 | إضافة/تعديل منشأة (إدارة) | `POST .../{id}/establishments`، `PUT .../{id}/establishments/{eid}` | Super Admin أو `partner.create` |
 | إضافة/تعديل/إيقاف فرع (إدارة) | `POST .../{id}/establishments/{eid}/branches`، `PUT .../{id}/branches/{bid}`، `PUT .../{id}/branches/{bid}/status` | Super Admin أو `partner.branch.manage` |
@@ -124,3 +126,10 @@ JOVX_MIGRATION_PASSWORD
 آخر تحقق كامل في مساحة التطوير الأصلية (19 نوفمبر 2026): **121 اختبارًا ناجحًا، دون فشل أو تجاوز**، بعد إضافة العضوية والنقاط (V5). الاختبارات التي تحتاج PostgreSQL لا تعمل افتراضيًا: تحتاج `JOVX_POSTGRES_TEST_ADMIN_PASSWORD_FILE` وخادم الاختبار المحلي المعزول على المنفذ 15432؛ تتحقق عمدًا من مسار بياناته الأصلي وتنشئ قواعد اختبار مؤقتة. بدون هذه البيئة يتجاوز Maven اختبارات قاعدة البيانات، ولا يمثل نجاحه تحققًا كاملًا من التخزين.
 
 لا توجد عمليات نشر تلقائي أو حسابات حقيقية أو بيانات إنتاج في هذا المستودع. إعداد جهاز تطوير جديد بالكامل وأتمتة اختبار PostgreSQL خارج مساحة التطوير الحالية يحتاجان إعدادًا مستقلًا.
+
+## قواعد التصميم المفروضة باختبارات
+
+- **أي مسار تحت `/api/v1` يتطلب تسجيل الدخول تلقائيًا.** المسارات العامة محددة صراحة في إعدادات الأمان: الدخول والتجديد والخروج، وفحص التحديثات، ودليل الشركاء والخطط العامة، واستلام البطاقة.
+- **كل endpoint يعلن صلاحيته بـ`@PreAuthorize`.** الاختبار يفشل إذا أُضيف endpoint بلا صلاحية ولم يُعتمد صراحة كعام.
+- **الخدمات لا تعتمد على طبقة الويب.** ترمي `DomainException` (نوع الخطأ ورمزه)، و`ApiErrors` وحده يحوّل نوع الخطأ إلى رمز HTTP.
+- **الطبقات في كل وحدة:** controller لا يصل إلى repository، ولا SQL خارج repository.

@@ -1000,4 +1000,59 @@ class PartnerJourneyTest {
         assertFalse(text.contains("account"),"no account data in the public list");
         assertEquals(10,directory.json().get(0).path("discountPercent").asInt());
     }
+
+    // ---- review fixes (2026-11-19) ----
+    @Test void reusedSaleRequestIdWithDifferentDataIsRejectedAndConcurrentRetriesReplay() throws Exception {
+        String root=superAccess(),planId=plan(root,"خطة طلب "+UUID.randomUUID(),6,true),phone=nextPhone(),code=stockCard(root);
+        UUID request=UUID.randomUUID();
+        var pool=Executors.newFixedThreadPool(3);
+        try {
+            var tries=new ArrayList<Future<Response>>();
+            for(int i=0;i<3;i++)tries.add(pool.submit(()->sell(root,request,phone,code,planId)));
+            var ids=new HashSet<String>();
+            for(var t:tries){var r=t.get();assertEquals(200,r.status(),"concurrent retries replay instead of failing: "+r.json());ids.add(r.text("memberId"));}
+            assertEquals(1,ids.size());
+        } finally {pool.shutdownNow();}
+        assertEquals(1,jdbc.queryForObject("SELECT COUNT(*) FROM membership_payments WHERE request_id=?",Integer.class,request.toString()));
+        var otherPlan=plan(root,"خطة أخرى "+UUID.randomUUID(),3,true);
+        var reused=sell(root,request,phone,code,otherPlan);
+        assertEquals(409,reused.status());assertEquals("REQUEST_ID_REUSED",reused.text("code"));
+        assertEquals("REQUEST_ID_REUSED",sell(root,request,nextPhone(),code,planId).text("code"));
+        String member=jdbc.queryForObject("SELECT member_account_id FROM membership_payments WHERE request_id=?",String.class,request.toString()).strip();
+        UUID renewal=UUID.randomUUID();
+        var body=Map.of("requestId",renewal,"planId",planId,"payment",Map.of("method","CASH"));
+        assertEquals(200,call("POST","/api/v1/admin/members/"+member+"/renewals",body,root).status());
+        assertEquals(200,call("POST","/api/v1/admin/members/"+member+"/renewals",body,root).status());
+        var changed=call("POST","/api/v1/admin/members/"+member+"/renewals",Map.of("requestId",renewal,"planId",otherPlan,"payment",Map.of("method","CASH")),root);
+        assertEquals("REQUEST_ID_REUSED",changed.text("code"));
+        assertEquals(1,jdbc.queryForObject("SELECT COUNT(*) FROM membership_payments WHERE request_id=?",Integer.class,renewal.toString()));
+    }
+    @Test void partnerListIsPagedAndSearchedOnTheServer() throws Exception {
+        String root=superAccess(),tag="بحث"+UUID.randomUUID().toString().substring(0,8);
+        var phones=new ArrayList<String>();
+        for(int i=0;i<3;i++){
+            String phone=nextPhone();phones.add(phone);var body=registration(phone);body.put("name",tag+" منشأة "+i);
+            assertEquals(201,call("POST","/api/v1/admin/partners",body,root).status());
+        }
+        var byEstablishment=call("GET","/api/v1/admin/partners?q="+java.net.URLEncoder.encode(tag,java.nio.charset.StandardCharsets.UTF_8),null,root);
+        assertEquals(200,byEstablishment.status());assertEquals(3,byEstablishment.json().size());
+        var first=call("GET","/api/v1/admin/partners?q="+java.net.URLEncoder.encode(tag,java.nio.charset.StandardCharsets.UTF_8)+"&limit=2",null,root);
+        var second=call("GET","/api/v1/admin/partners?q="+java.net.URLEncoder.encode(tag,java.nio.charset.StandardCharsets.UTF_8)+"&limit=2&offset=2",null,root);
+        assertEquals(2,first.json().size());assertEquals(1,second.json().size());
+        assertFalse(first.json().toString().contains(second.json().get(0).path("partnerId").asString()));
+        String digits=phones.get(1).substring(1);
+        var byPhone=call("GET","/api/v1/admin/partners?q=00"+digits,null,root);
+        assertEquals(1,byPhone.json().size(),"00-prefixed international number finds the owner");
+        assertEquals(1,byPhone.json().get(0).path("branchCount").asInt());
+        assertEquals(400,call("GET","/api/v1/admin/partners?limit=101",null,root).status());
+        assertEquals(0,call("GET","/api/v1/admin/partners?q=%25%25%25"+UUID.randomUUID(),null,root).json().size(),"LIKE wildcards are literal");
+    }
+    @Test void unknownApiRoutesNeedLoginAndPublicRoutesStayOpen() throws Exception {
+        assertEquals(401,call("GET","/api/v1/does-not-exist",null,null).status());
+        assertEquals(200,call("GET","/api/v1/public/partners",null,null).status());
+        assertEquals(200,call("GET","/api/v1/public/membership-plans",null,null).status());
+        assertEquals(401,call("GET","/api/v1/admin/partners",null,null).status());
+        assertEquals(403,call("GET","/api/v1/admin/partners",null,login(account(AccountRole.ADMIN)).access()).status());
+        assertEquals(401,call("GET","/not-api",null,null).status());
+    }
 }

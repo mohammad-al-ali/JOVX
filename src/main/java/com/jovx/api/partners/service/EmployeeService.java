@@ -8,10 +8,10 @@ import java.time.Clock;
 import java.util.*;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Profile;
-import org.springframework.http.HttpStatus;
+import com.jovx.api.common.DomainException;
+import com.jovx.api.common.DomainException.Kind;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
-import org.springframework.web.server.ResponseStatusException;
 
 @Service
 @Profile("local-postgres")
@@ -71,7 +71,7 @@ public class EmployeeService {
         s -> {
           UUID owner = owner(actor, sid, active ? "employee.reactivate" : "employee.suspend");
           if (!repository.lockEmployee(employee, owner))
-            throw error(HttpStatus.NOT_FOUND, "EMPLOYEE_NOT_FOUND");
+            throw error(Kind.NOT_FOUND, "EMPLOYEE_NOT_FOUND");
           accounts.setActive(employee, active);
           repository.audit(
               owner, actor, active ? "EMPLOYEE_REACTIVATED" : "EMPLOYEE_SUSPENDED", clock.instant());
@@ -84,7 +84,7 @@ public class EmployeeService {
         s -> {
           UUID owner = owner(actor, sid, "employee.pin.change");
           if (!repository.lockEmployee(employee, owner))
-            throw error(HttpStatus.NOT_FOUND, "EMPLOYEE_NOT_FOUND");
+            throw error(Kind.NOT_FOUND, "EMPLOYEE_NOT_FOUND");
           accounts.changePin(employee, pin);
           repository.audit(owner, actor, "EMPLOYEE_PIN_CHANGED", clock.instant());
         });
@@ -96,10 +96,10 @@ public class EmployeeService {
         s -> {
           UUID owner = owner(actor, sid, "employee.create");
           if (!repository.lockEmployee(employee, owner))
-            throw error(HttpStatus.NOT_FOUND, "EMPLOYEE_NOT_FOUND");
+            throw error(Kind.NOT_FOUND, "EMPLOYEE_NOT_FOUND");
           for (UUID branch : branchIds)
             if (!repository.lockActiveBranch(branch, owner))
-              throw error(HttpStatus.BAD_REQUEST, "INVALID_EMPLOYEE_BRANCH");
+              throw error(Kind.INVALID, "INVALID_EMPLOYEE_BRANCH");
           repository.clearBranches(employee);
           for (UUID branch : branchIds) repository.assignBranch(employee, branch);
           repository.audit(owner, actor, "EMPLOYEE_BRANCHES_CHANGED", clock.instant());
@@ -114,7 +114,7 @@ public class EmployeeService {
             access.requirePermission(actor, sid, "employee.permissions.manage");
           for (UUID branch : request.branchIds())
             if (!repository.lockActiveBranch(branch, owner))
-              throw error(HttpStatus.BAD_REQUEST, "INVALID_EMPLOYEE_BRANCH");
+              throw error(Kind.INVALID, "INVALID_EMPLOYEE_BRANCH");
           UUID employee = accounts.create(request.name(), request.phone(), request.pin());
           repository.insertEmployee(employee, owner);
           for (UUID branch : request.branchIds()) repository.assignBranch(employee, branch);
@@ -136,7 +136,7 @@ public class EmployeeService {
         s -> {
           UUID owner = owner(actor, sid, "employee.permissions.manage");
           if (!repository.lockEmployee(employee, owner))
-            throw error(HttpStatus.NOT_FOUND, "EMPLOYEE_NOT_FOUND");
+            throw error(Kind.NOT_FOUND, "EMPLOYEE_NOT_FOUND");
           accounts.replacePermissions(actor, employee, permissions);
           repository.audit(owner, actor, "EMPLOYEE_PERMISSIONS_CHANGED", clock.instant());
         });
@@ -155,11 +155,11 @@ public class EmployeeService {
     access.requirePermission(actor, sid, permission);
     return repository
         .activeOwner(actor, true)
-        .orElseThrow(() -> error(HttpStatus.FORBIDDEN, "FORBIDDEN"))
+        .orElseThrow(() -> error(Kind.FORBIDDEN, "FORBIDDEN"))
         .id();
   }
 
-  private static ResponseStatusException error(HttpStatus status, String code) {
-    return new ResponseStatusException(status, code);
+  private static DomainException error(Kind status, String code) {
+    return new DomainException(status, code);
   }
 }

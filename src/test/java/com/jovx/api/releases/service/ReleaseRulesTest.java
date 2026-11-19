@@ -10,7 +10,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
-import org.springframework.web.server.ResponseStatusException;
+import com.jovx.api.common.DomainException;
 
 class ReleaseRulesTest {
   static final Instant NOW = Instant.parse("2026-11-17T12:00:00Z");
@@ -88,13 +88,28 @@ class ReleaseRulesTest {
 
   @Test
   void manifestCannotRedirectDownloadsOrLieAboutItself() {
-    assertThrows(ResponseStatusException.class,
+    assertThrows(DomainException.class,
         () -> parse(manifest("member", "https://evil.example/app.apk", "b".repeat(64))));
-    assertThrows(ResponseStatusException.class,
+    assertThrows(DomainException.class,
         () -> parse(manifest("admin", PREFIX + "x.apk", "b".repeat(64))));
-    assertThrows(ResponseStatusException.class,
+    assertThrows(DomainException.class,
         () -> parse(manifest("member", PREFIX + "x.apk", "XYZ")));
-    assertThrows(ResponseStatusException.class, () -> parse("not json"));
+    assertThrows(DomainException.class, () -> parse("not json"));
+  }
+
+  @Test
+  void downloadMustStayInsideThePrefixDirectoryOnTheSameHost() {
+    // A prefix configured without '/' still means the directory, not a name prefix.
+    var loose = new HttpManifestClient("https://o.github.io/jovx-releases", "https://github.com/o/jovx-releases");
+    assertTrue(loose.underPrefix("https://github.com/o/jovx-releases/releases/download/v1/app.apk"));
+    assertFalse(loose.underPrefix("https://github.com/o/jovx-releases-evil/app.apk"));
+    assertFalse(client.underPrefix("https://github.com.evil.example/o/jovx-releases/releases/download/app.apk"));
+    assertFalse(client.underPrefix("http://github.com/o/jovx-releases/releases/download/app.apk"));
+    assertFalse(client.underPrefix("https://github.com:8443/o/jovx-releases/releases/download/app.apk"));
+    assertFalse(client.underPrefix(PREFIX + "../../other-repo/app.apk"));
+    assertFalse(client.underPrefix(PREFIX + "app.apk?x=1"));
+    assertFalse(client.underPrefix(PREFIX));
+    assertTrue(client.underPrefix(PREFIX + "member-1801/app.apk"));
   }
 
   @Test

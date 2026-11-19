@@ -176,6 +176,11 @@ public final class MembershipRepository {
         p.recordedBy().toString(), ts(p.createdAt()));
   }
 
+  /** Serializes work on one client request id until the transaction ends (no row needed yet). */
+  public void lockRequest(UUID request) {
+    jdbc.queryForList("SELECT pg_advisory_xact_lock(hashtextextended(?, 0))", request.toString());
+  }
+
   public Optional<Payment> paymentByRequest(UUID request) {
     return first(jdbc.query("SELECT " + PAYMENT_COLUMNS + " FROM membership_payments WHERE request_id=?", PAYMENT, request.toString()));
   }

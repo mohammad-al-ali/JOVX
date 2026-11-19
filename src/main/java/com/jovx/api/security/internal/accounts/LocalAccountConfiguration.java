@@ -20,7 +20,7 @@ public class LocalAccountConfiguration {
         settings.setConnectionInitSql(environment.getRequiredProperty("jovx.database.connection-init-sql"));
         settings.setUsername(environment.getRequiredProperty("jovx.database.username"));
         settings.setPassword(environment.getRequiredProperty("jovx.database.password"));
-        settings.setMaximumPoolSize(4);
+        settings.setMaximumPoolSize(environment.getProperty("jovx.database.pool-size", Integer.class, 4));
         settings.setConnectionTimeout(5000);
         settings.setPoolName("jovx-local-identity");
         return new HikariDataSource(settings);

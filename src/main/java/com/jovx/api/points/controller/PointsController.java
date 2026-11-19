@@ -1,8 +1,8 @@
 package com.jovx.api.points.controller;
 
-import com.jovx.api.points.repository.PointsRepository.Entry;
+import com.jovx.api.points.dto.PointsDtos.Balance;
+import com.jovx.api.points.dto.PointsDtos.HistoryEntry;
 import com.jovx.api.points.service.PointsQueryService;
-import com.jovx.api.points.service.PointsQueryService.Balance;
 import java.util.*;
 import org.springframework.context.annotation.Profile;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -26,7 +26,7 @@ public class PointsController {
   }
 
   @GetMapping("/api/v1/member/points/history")
-  public List<Entry> history(
+  public List<HistoryEntry> history(
       JwtAuthenticationToken a,
       @RequestParam(defaultValue = "0") int offset,
       @RequestParam(defaultValue = "50") int limit) {

@@ -27,8 +27,9 @@ final class JdbcAccountDirectory implements AccountDirectory {
         if(text==null || text.isBlank()) return List.of();
         String name=text.strip().toLowerCase(Locale.ROOT).replace("\\","\\\\").replace("%","\\%").replace("_","\\_");
         String digits=text.replaceAll("[^0-9]","");
-        // A local 09... number is stored as +9639...; match on the part after the leading zero.
-        if(digits.startsWith("0")) digits=digits.substring(1);
+        // "00963..." is the international form of "+963..."; a national "09..." is stored as "+9639...".
+        if(digits.startsWith("00")) digits=digits.substring(2);
+        else if(digits.startsWith("0")) digits=digits.substring(1);
         String phone=digits.length()>=3?"%"+digits+"%":null;
         return jdbc.query("""
             SELECT u.id FROM users u JOIN roles r ON r.id=u.role_id

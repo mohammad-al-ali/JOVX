@@ -10,10 +10,10 @@ import java.time.Instant;
 import java.util.*;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Profile;
-import org.springframework.http.HttpStatus;
+import com.jovx.api.common.DomainException;
+import com.jovx.api.common.DomainException.Kind;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
-import org.springframework.web.server.ResponseStatusException;
 
 /**
  * Release lifecycle: import CI build as DRAFT, choose policy, publish or withdraw.
@@ -98,9 +98,9 @@ public class ReleaseService {
           access.require(actor, sid, PERMISSION);
           var release = lock(id);
           if (release.status() == ReleaseStatus.WITHDRAWN)
-            throw error(HttpStatus.CONFLICT, "RELEASE_WITHDRAWN");
+            throw error(Kind.CONFLICT, "RELEASE_WITHDRAWN");
           if (mode == UpdateMode.REQUIRED && requiredAfter != null)
-            throw error(HttpStatus.BAD_REQUEST, "DEADLINE_ONLY_FOR_OPTIONAL");
+            throw error(Kind.INVALID, "DEADLINE_ONLY_FOR_OPTIONAL");
           repository.updatePolicy(id, mode, requiredAfter);
           repository.audit(id, release.app(), actor, "RELEASE_POLICY_CHANGED", clock.instant());
         });
@@ -126,7 +126,7 @@ public class ReleaseService {
                   .mapToInt(AppRelease::buildNumber)
                   .max()
                   .orElse(0);
-          if (build > latest) throw error(HttpStatus.CONFLICT, "MIN_BUILD_NOT_PUBLISHED");
+          if (build > latest) throw error(Kind.CONFLICT, "MIN_BUILD_NOT_PUBLISHED");
           repository.setMinSupported(app, platform, build, actor, clock.instant());
           repository.audit(null, app, actor, "MIN_SUPPORTED_CHANGED", clock.instant());
         });
@@ -141,7 +141,7 @@ public class ReleaseService {
           repository.lockMinSupported(release.app(), release.platform());
           if (release.status() == to) return;
           if (release.status() == ReleaseStatus.WITHDRAWN)
-            throw error(HttpStatus.CONFLICT, "RELEASE_WITHDRAWN");
+            throw error(Kind.CONFLICT, "RELEASE_WITHDRAWN");
           if (to == ReleaseStatus.WITHDRAWN) {
             int remaining =
                 repository.published(release.app(), release.platform()).stream()
@@ -151,7 +151,7 @@ public class ReleaseService {
                     .orElse(0);
             // Never leave a minimum that no published build can satisfy.
             if (repository.minSupported(release.app(), release.platform()) > remaining)
-              throw error(HttpStatus.CONFLICT, "LOWER_MIN_SUPPORTED_FIRST");
+              throw error(Kind.CONFLICT, "LOWER_MIN_SUPPORTED_FIRST");
           }
           repository.setStatus(id, to, clock.instant());
           repository.audit(id, release.app(), actor, action, clock.instant());
@@ -161,14 +161,14 @@ public class ReleaseService {
   private ReleaseManifest latestManifest(AppKind app, Platform platform) {
     return manifests
         .latest(app, platform)
-        .orElseThrow(() -> error(HttpStatus.SERVICE_UNAVAILABLE, "MANIFEST_NOT_CONFIGURED"));
+        .orElseThrow(() -> error(Kind.UNAVAILABLE, "MANIFEST_NOT_CONFIGURED"));
   }
 
   private AppRelease lock(UUID id) {
-    return repository.lock(id).orElseThrow(() -> error(HttpStatus.NOT_FOUND, "RELEASE_NOT_FOUND"));
+    return repository.lock(id).orElseThrow(() -> error(Kind.NOT_FOUND, "RELEASE_NOT_FOUND"));
   }
 
-  private static ResponseStatusException error(HttpStatus status, String code) {
-    return new ResponseStatusException(status, code);
+  private static DomainException error(Kind status, String code) {
+    return new DomainException(status, code);
   }
 }

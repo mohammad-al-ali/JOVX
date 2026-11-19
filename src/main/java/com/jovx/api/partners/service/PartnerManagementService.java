@@ -9,10 +9,10 @@ import java.time.Clock;
 import java.util.*;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Profile;
-import org.springframework.http.HttpStatus;
+import com.jovx.api.common.DomainException;
+import com.jovx.api.common.DomainException.Kind;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
-import org.springframework.web.server.ResponseStatusException;
 
 /**
  * Establishments, branches and discount after registration. Approved 2026-11-17:
@@ -48,17 +48,23 @@ public class PartnerManagementService {
 
   // ---- administration ----
 
-  public List<PartnerSummary> list(UUID actor, UUID sid) {
+  /**
+   * One page (default 20) of partners; the search matches the owner's name or login phone, or an
+   * establishment name. Three queries per page regardless of size (no per-partner queries).
+   */
+  public List<PartnerSummary> list(UUID actor, UUID sid, String query, int offset, int limit) {
     return tx.execute(
         s -> {
           admin.requireAny(actor, sid, Set.of(CREATE, BRANCHES));
-          var owners = repository.owners();
-          var accounts = directory.summaries(owners.stream().map(Owner::accountId).toList());
-          return owners.stream()
+          String search = query == null || query.isBlank() ? null : query.strip();
+          List<UUID> owners =
+              search == null ? List.of() : directory.search("PARTNER", search, 100);
+          var page = repository.ownerPage(search, owners, offset, limit);
+          var accounts = directory.summaries(page.stream().map(OwnerListing::accountId).toList());
+          return page.stream()
               .map(
                   o -> {
                     var account = accounts.get(o.accountId());
-                    var establishments = repository.establishmentDetails(o.id());
                     return new PartnerSummary(
                         o.id(),
                         o.accountId(),
@@ -66,13 +72,9 @@ public class PartnerManagementService {
                         account == null ? null : account.phone(),
                         o.status(),
                         o.minimum(),
-                        establishments.stream().map(EstablishmentDetail::name).toList(),
-                        establishments.stream().mapToInt(e -> e.branches().size()).sum());
+                        o.establishmentNames(),
+                        o.branchCount());
                   })
-              .sorted(
-                  Comparator.comparing(
-                          (PartnerSummary p) -> p.ownerName() == null ? "" : p.ownerName())
-                      .thenComparing(p -> p.partnerId().toString()))
               .toList();
         });
   }
@@ -92,7 +94,7 @@ public class PartnerManagementService {
           var owner = owner(partner, true);
           new PartnerDiscount(value);
           if (value.stripTrailingZeros().scale() > 2)
-            throw error(HttpStatus.BAD_REQUEST, "INVALID_DISCOUNT_PRECISION");
+            throw error(Kind.INVALID, "INVALID_DISCOUNT_PRECISION");
           repository.updateDiscount(owner.id(), value);
           repository.audit(owner.id(), actor, "DISCOUNT_CHANGED", clock.instant());
         });
@@ -213,7 +215,7 @@ public class PartnerManagementService {
   private void editEstablishment(
       UUID actor, Owner owner, UUID establishment, EstablishmentRequest request) {
     if (repository.lockEstablishment(establishment, owner.id()).isEmpty())
-      throw error(HttpStatus.NOT_FOUND, "ESTABLISHMENT_NOT_FOUND");
+      throw error(Kind.NOT_FOUND, "ESTABLISHMENT_NOT_FOUND");
     requireCategory(request.categoryId());
     // Contact phone is independent of the login phone; this never touches credentials.
     repository.updateEstablishment(
@@ -227,7 +229,7 @@ public class PartnerManagementService {
   private BranchCreatedResponse addBranch(
       UUID actor, Owner owner, UUID establishment, BranchRequest request) {
     if (repository.lockEstablishment(establishment, owner.id()).isEmpty())
-      throw error(HttpStatus.NOT_FOUND, "ESTABLISHMENT_NOT_FOUND");
+      throw error(Kind.NOT_FOUND, "ESTABLISHMENT_NOT_FOUND");
     requireLocation(request.cityId(), request.addressId());
     UUID branch = UUID.randomUUID();
     repository.insertBranch(
@@ -243,7 +245,7 @@ public class PartnerManagementService {
 
   private void editBranch(UUID actor, Owner owner, UUID branch, BranchRequest request) {
     if (repository.lockBranch(branch, owner.id()).isEmpty())
-      throw error(HttpStatus.NOT_FOUND, "BRANCH_NOT_FOUND");
+      throw error(Kind.NOT_FOUND, "BRANCH_NOT_FOUND");
     requireLocation(request.cityId(), request.addressId());
     repository.updateBranch(
         branch,
@@ -258,7 +260,7 @@ public class PartnerManagementService {
     var current =
         repository
             .lockBranch(branch, owner.id())
-            .orElseThrow(() -> error(HttpStatus.NOT_FOUND, "BRANCH_NOT_FOUND"));
+            .orElseThrow(() -> error(Kind.NOT_FOUND, "BRANCH_NOT_FOUND"));
     if (current.equals(status)) return;
     // Employees assigned only to suspended branches lose login eligibility on their next request.
     repository.setBranchStatus(branch, status);
@@ -271,31 +273,31 @@ public class PartnerManagementService {
 
   private Owner owner(UUID partner, boolean lock) {
     var owner = lock ? repository.lockOwner(partner) : repository.findOwner(partner);
-    return owner.orElseThrow(() -> error(HttpStatus.NOT_FOUND, "PARTNER_NOT_FOUND"));
+    return owner.orElseThrow(() -> error(Kind.NOT_FOUND, "PARTNER_NOT_FOUND"));
   }
 
   private Owner self(UUID actor, UUID sid) {
     actors.requireRole(actor, sid, "PARTNER");
     return repository
         .activeOwner(actor, true)
-        .orElseThrow(() -> error(HttpStatus.FORBIDDEN, "FORBIDDEN"));
+        .orElseThrow(() -> error(Kind.FORBIDDEN, "FORBIDDEN"));
   }
 
   private void requireCategory(UUID category) {
     if (!repository.categoryExists(category))
-      throw error(HttpStatus.BAD_REQUEST, "INVALID_LOCATION_OR_CATEGORY");
+      throw error(Kind.INVALID, "INVALID_LOCATION_OR_CATEGORY");
   }
 
   private void requireLocation(UUID city, UUID address) {
     if (!repository.addressBelongsToCity(address, city))
-      throw error(HttpStatus.BAD_REQUEST, "INVALID_LOCATION_OR_CATEGORY");
+      throw error(Kind.INVALID, "INVALID_LOCATION_OR_CATEGORY");
   }
 
   private static String optional(String value) {
     return value == null || value.isBlank() ? null : value.strip();
   }
 
-  private static ResponseStatusException error(HttpStatus status, String code) {
-    return new ResponseStatusException(status, code);
+  private static DomainException error(Kind status, String code) {
+    return new DomainException(status, code);
   }
 }

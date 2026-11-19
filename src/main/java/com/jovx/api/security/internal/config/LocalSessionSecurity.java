@@ -90,25 +90,10 @@ public class LocalSessionSecurity {
                 // Guest browsing and first-PIN card claim (plan decision 44); the claim is rate limited.
                 .requestMatchers(org.springframework.http.HttpMethod.GET,"/api/v1/public/partners","/api/v1/public/membership-plans").permitAll()
                 .requestMatchers(org.springframework.http.HttpMethod.POST,"/api/v1/member/claim").permitAll()
-                .requestMatchers("/api/v1/admin/membership-plans","/api/v1/admin/membership-plans/*","/api/v1/admin/member-cards",
-                    "/api/v1/admin/member-cards/batches","/api/v1/admin/members","/api/v1/admin/members/*",
-                    "/api/v1/admin/members/*/renewals","/api/v1/admin/members/*/card/suspension","/api/v1/admin/members/*/pin",
-                    "/api/v1/member/me","/api/v1/member/scan-token","/api/v1/member/points","/api/v1/member/points/history").authenticated()
-                .requestMatchers("/api/v1/admin/app-releases/*","/api/v1/admin/app-releases/*/manifest",
-                    "/api/v1/admin/app-releases/*/import","/api/v1/admin/app-releases/*/min-supported",
-                    "/api/v1/admin/app-releases/releases/*/policy","/api/v1/admin/app-releases/releases/*/publish",
-                    "/api/v1/admin/app-releases/releases/*/withdraw").authenticated()
-                .requestMatchers("/api/v1/reference-data/cities","/api/v1/reference-data/addresses","/api/v1/reference-data/categories").authenticated()
-                .requestMatchers("/api/v1/session","/api/v1/reference-data","/api/v1/admin/partners","/api/v1/admin/partners/*/activate","/api/v1/partner/context").authenticated()
-                .requestMatchers("/api/v1/admin/access/catalog","/api/v1/admin/roles/*/permissions","/api/v1/admin/users/*/role",
-                    "/api/v1/partner/employees","/api/v1/partner/employees/*/permissions","/api/v1/partner/employee-permissions").authenticated()
-                .requestMatchers("/api/v1/account/pin","/api/v1/admin/partners/*","/api/v1/admin/partners/*/discount",
-                    "/api/v1/admin/partners/*/establishments","/api/v1/admin/partners/*/establishments/*",
-                    "/api/v1/admin/partners/*/establishments/*/branches","/api/v1/admin/partners/*/branches/*",
-                    "/api/v1/admin/partners/*/branches/*/status","/api/v1/partner/profile","/api/v1/partner/establishments",
-                    "/api/v1/partner/establishments/*","/api/v1/partner/establishments/*/branches","/api/v1/partner/branches/*",
-                    "/api/v1/partner/branches/*/status","/api/v1/partner/employees/*/status","/api/v1/partner/employees/*/pin",
-                    "/api/v1/partner/employees/*/branches").authenticated()
+                // Every other API route needs a valid session. Each controller still declares its own
+                // role/permission with @PreAuthorize (enforced by ModularArchitectureTest), so adding an
+                // endpoint never requires editing this security module.
+                .requestMatchers("/api/v1/**").authenticated()
                 .anyRequest().denyAll())
             .addFilterBefore(new AuthRequestFilter(limiter),UsernamePasswordAuthenticationFilter.class)
             .exceptionHandling(e->e.authenticationEntryPoint((q,r,x)->AuthRequestFilter.error(r,401,"UNAUTHENTICATED",0))
