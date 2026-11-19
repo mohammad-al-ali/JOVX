@@ -14,7 +14,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * Default city and neighborhood (user decision 2026-11-19): preselected in partner registration,
- * establishment/branch forms and the public directory filter. Changed by SUPER_ADMIN or an ADMIN
+ * store forms and the public directory filter. Changed by SUPER_ADMIN or an ADMIN
  * holding partner.create, the same actors that maintain the city and neighborhood lists.
  */
 @Service

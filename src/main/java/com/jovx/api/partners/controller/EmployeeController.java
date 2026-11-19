@@ -60,13 +60,13 @@ public class EmployeeController {
     employees.pin(id(actor), sid(actor), userId, body.pin());
   }
 
-  @PutMapping("/api/v1/partner/employees/{userId}/branches")
+  @PutMapping("/api/v1/partner/employees/{userId}/stores")
   @ResponseStatus(HttpStatus.NO_CONTENT)
-  public void branches(
+  public void stores(
       JwtAuthenticationToken actor,
       @PathVariable UUID userId,
-      @Valid @RequestBody EmployeeBranchesRequest body) {
-    employees.branches(id(actor), sid(actor), userId, body.branchIds());
+      @Valid @RequestBody EmployeeStoresRequest body) {
+    employees.stores(id(actor), sid(actor), userId, body.storeIds());
   }
 
   @GetMapping("/api/v1/partner/employee-permissions")

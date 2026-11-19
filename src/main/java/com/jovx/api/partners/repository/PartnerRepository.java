@@ -2,24 +2,36 @@ package com.jovx.api.partners.repository;
 
 import com.jovx.api.partners.model.PartnerModels.*;
 import java.math.BigDecimal;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Time;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.*;
 import javax.sql.DataSource;
 import org.springframework.context.annotation.Profile;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.RowCallbackHandler;
 import org.springframework.stereotype.Repository;
 
+/** Partner-owned tables only: owners, stores, store hours, employees and their stores, events. */
 @Repository
 @Profile("local-postgres")
 public final class PartnerRepository {
   private static final String REFERENCE_KEY =
       "lower(btrim(regexp_replace(name, '[[:space:]]+', ' ', 'g')))";
+  private static final String STORE_DETAIL =
+      "SELECT s.id,s.name,s.category_id,k.name,s.city_id,c.name,s.address_id,a.name,"
+          + "s.address_details,s.contact_phone,s.latitude,s.longitude,s.description,s.logo_key,"
+          + "s.status FROM partner_stores s JOIN categories k ON k.id=s.category_id"
+          + " JOIN cities c ON c.id=s.city_id JOIN addresses a ON a.id=s.address_id ";
   private final JdbcTemplate jdbc;
 
   public PartnerRepository(DataSource source) {
     jdbc = new JdbcTemplate(source);
   }
+
+  // ---- reference checks ----
 
   public boolean categoryExists(UUID category) {
     return count("SELECT COUNT(*) FROM categories WHERE id=?", category) == 1;
@@ -29,6 +41,8 @@ public final class PartnerRepository {
     return count("SELECT COUNT(*) FROM addresses WHERE id=? AND city_id=?", address, city) == 1;
   }
 
+  // ---- owners ----
+
   public void insertOwner(UUID id, UUID account, BigDecimal minimum) {
     jdbc.update(
         "INSERT INTO partner_owners(id,account_id,minimum_discount_percent,status) VALUES"
@@ -36,38 +50,6 @@ public final class PartnerRepository {
         id.toString(),
         account.toString(),
         minimum);
-  }
-
-  public void insertEstablishment(
-      UUID id, UUID partner, UUID category, String name, String contact) {
-    insertEstablishment(id, partner, category, name, contact, "PENDING");
-  }
-
-  public void insertEstablishment(
-      UUID id, UUID partner, UUID category, String name, String contact, String status) {
-    jdbc.update(
-        "INSERT INTO partner_establishments(id,partner_id,category_id,name,contact_phone,status)"
-            + " VALUES (?,?,?,?,?,?)",
-        id.toString(),
-        partner.toString(),
-        category.toString(),
-        name,
-        contact,
-        status);
-  }
-
-  public void insertBranch(
-      UUID id, UUID establishment, String name, UUID city, UUID address, String details) {
-    jdbc.update(
-        "INSERT INTO"
-            + " partner_branches(id,establishment_id,name,city_id,address_id,address_details,status)"
-            + " VALUES (?,?,?,?,?,?,'ACTIVE')",
-        id.toString(),
-        establishment.toString(),
-        name,
-        city.toString(),
-        address.toString(),
-        details);
   }
 
   private Optional<Owner> owner(String predicate, UUID id, boolean lock) {
@@ -99,36 +81,224 @@ public final class PartnerRepository {
     return owner("account_id=? AND status='ACTIVE'", account, lock);
   }
 
-  public int establishmentCount(UUID partner) {
-    return count("SELECT COUNT(*) FROM partner_establishments WHERE partner_id=?", partner);
-  }
-
+  /** Activates the partner and every store still pending with it. */
   public void activateRegistration(UUID partner) {
     jdbc.update("UPDATE partner_owners SET status='ACTIVE' WHERE id=?", partner.toString());
     jdbc.update(
-        "UPDATE partner_establishments SET status='ACTIVE' WHERE partner_id=? AND status='PENDING'",
+        "UPDATE partner_stores SET status='ACTIVE' WHERE partner_id=? AND status='PENDING'",
         partner.toString());
   }
 
-  public List<Establishment> establishments(UUID partner) {
-    return jdbc.query(
-        "SELECT id,name FROM partner_establishments WHERE partner_id=? AND status='ACTIVE' ORDER BY"
-            + " id",
-        (r, i) ->
-            new Establishment(
-                UUID.fromString(r.getString(1)),
-                r.getString(2),
-                branches(UUID.fromString(r.getString(1)))),
+  public void updateDiscount(UUID partner, BigDecimal minimum) {
+    jdbc.update(
+        "UPDATE partner_owners SET minimum_discount_percent=? WHERE id=?",
+        minimum,
         partner.toString());
   }
 
-  private List<Branch> branches(UUID establishment) {
+  /**
+   * One page of partners with store names and store count in a single query. With a search text,
+   * matches a store name or one of the given owner accounts.
+   */
+  public List<OwnerListing> ownerPage(
+      String search, Collection<UUID> matchingAccounts, int offset, int limit) {
+    var sql =
+        new StringBuilder(
+            "SELECT p.id,p.account_id,p.status,p.minimum_discount_percent,"
+                + " (SELECT array_agg(s.name ORDER BY s.name) FROM partner_stores s"
+                + " WHERE s.partner_id=p.id),"
+                + " (SELECT COUNT(*) FROM partner_stores s WHERE s.partner_id=p.id),"
+                + " (SELECT min(s.name) FROM partner_stores s WHERE s.partner_id=p.id) AS"
+                + " sort_name FROM partner_owners p");
+    var args = new ArrayList<Object>();
+    if (search != null) {
+      sql.append(
+          " WHERE (EXISTS (SELECT 1 FROM partner_stores s WHERE s.partner_id=p.id AND"
+              + " lower(s.name) LIKE ? ESCAPE '\\')");
+      args.add(
+          "%"
+              + search.toLowerCase(Locale.ROOT)
+                  .replace("\\", "\\\\")
+                  .replace("%", "\\%")
+                  .replace("_", "\\_")
+              + "%");
+      if (!matchingAccounts.isEmpty()) {
+        sql.append(" OR p.account_id IN (")
+            .append(String.join(",", Collections.nCopies(matchingAccounts.size(), "?")))
+            .append(")");
+        matchingAccounts.forEach(a -> args.add(a.toString()));
+      }
+      sql.append(")");
+    }
+    sql.append(" ORDER BY sort_name NULLS LAST, p.id OFFSET ? LIMIT ?");
+    args.add(Math.max(0, offset));
+    args.add(Math.max(1, Math.min(limit, 100)));
     return jdbc.query(
-        "SELECT id,name FROM partner_branches WHERE establishment_id=? AND status='ACTIVE' ORDER BY"
-            + " name,id",
-        (r, i) -> new Branch(UUID.fromString(r.getString(1)), r.getString(2)),
-        establishment.toString());
+        sql.toString(),
+        (r, i) -> {
+          var names = r.getArray(5);
+          return new OwnerListing(
+              UUID.fromString(r.getString(1)),
+              UUID.fromString(r.getString(2)),
+              r.getString(3),
+              r.getBigDecimal(4),
+              names == null ? List.of() : List.of((String[]) names.getArray()),
+              r.getInt(6));
+        },
+        args.toArray());
   }
+
+  // ---- stores ----
+
+  public void insertStore(UUID id, UUID partner, StoreData d, String status, Instant now) {
+    jdbc.update(
+        "INSERT INTO partner_stores(id,partner_id,name,category_id,city_id,address_id,"
+            + "address_details,contact_phone,latitude,longitude,description,status,created_at)"
+            + " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        id.toString(),
+        partner.toString(),
+        d.name(),
+        d.categoryId().toString(),
+        d.cityId().toString(),
+        d.addressId().toString(),
+        d.addressDetails(),
+        d.contactPhone(),
+        d.latitude(),
+        d.longitude(),
+        d.description(),
+        status,
+        Timestamp.from(now));
+  }
+
+  public void updateStore(UUID id, StoreData d) {
+    jdbc.update(
+        "UPDATE partner_stores SET name=?,category_id=?,city_id=?,address_id=?,address_details=?,"
+            + "contact_phone=?,latitude=?,longitude=?,description=? WHERE id=?",
+        d.name(),
+        d.categoryId().toString(),
+        d.cityId().toString(),
+        d.addressId().toString(),
+        d.addressDetails(),
+        d.contactPhone(),
+        d.latitude(),
+        d.longitude(),
+        d.description(),
+        id.toString());
+  }
+
+  public int storeCount(UUID partner) {
+    return count("SELECT COUNT(*) FROM partner_stores WHERE partner_id=?", partner);
+  }
+
+  /** Locks the store only when it belongs to the partner; returns its status. */
+  public Optional<String> lockStore(UUID store, UUID partner) {
+    return jdbc
+        .queryForList(
+            "SELECT status FROM partner_stores WHERE id=? AND partner_id=? FOR UPDATE",
+            String.class,
+            store.toString(),
+            partner.toString())
+        .stream()
+        .findFirst();
+  }
+
+  public void setStoreStatus(UUID id, String status) {
+    jdbc.update("UPDATE partner_stores SET status=? WHERE id=?", status, id.toString());
+  }
+
+  public void replaceHours(UUID store, List<StoreHours> week) {
+    jdbc.update("DELETE FROM partner_store_hours WHERE store_id=?", store.toString());
+    for (var day : week)
+      jdbc.update(
+          "INSERT INTO partner_store_hours(store_id,weekday,closed,opens_at,closes_at)"
+              + " VALUES (?,?,?,?,?)",
+          store.toString(),
+          day.weekday(),
+          day.closed(),
+          day.opensAt() == null ? null : Time.valueOf(day.opensAt()),
+          day.closesAt() == null ? null : Time.valueOf(day.closesAt()));
+  }
+
+  /** Active stores of a partner, for employee assignment. */
+  public List<StoreRef> activeStores(UUID partner) {
+    return jdbc.query(
+        "SELECT id,name FROM partner_stores WHERE partner_id=? AND status='ACTIVE'"
+            + " ORDER BY name,id",
+        (r, i) -> new StoreRef(UUID.fromString(r.getString(1)), r.getString(2)),
+        partner.toString());
+  }
+
+  /** Every store of one partner, any status, with reference names and weekly hours. */
+  public List<StoreDetail> storeDetails(UUID partner) {
+    var hours = hoursOf("SELECT h.store_id,h.weekday,h.closed,h.opens_at,h.closes_at FROM"
+        + " partner_store_hours h JOIN partner_stores s ON s.id=h.store_id WHERE s.partner_id=?",
+        partner.toString());
+    return jdbc.query(
+        STORE_DETAIL + "WHERE s.partner_id=? ORDER BY s.name,s.id",
+        (r, i) -> detail(r, hours),
+        partner.toString());
+  }
+
+  /**
+   * Guest directory: active stores of active partners. city null = every city; otherwise only
+   * stores located in that city. Two queries in total (stores, then all their hours).
+   */
+  public List<PublicStore> publicDirectory(UUID city) {
+    String filter = city == null ? "" : " AND s.city_id=?";
+    Object[] args = city == null ? new Object[0] : new Object[] {city.toString()};
+    var hours = hoursOf("SELECT h.store_id,h.weekday,h.closed,h.opens_at,h.closes_at FROM"
+        + " partner_store_hours h JOIN partner_stores s ON s.id=h.store_id JOIN partner_owners p"
+        + " ON p.id=s.partner_id WHERE s.status='ACTIVE' AND p.status='ACTIVE'" + filter, args);
+    return jdbc.query(
+        "SELECT s.id,s.name,k.name,p.minimum_discount_percent,s.contact_phone,s.city_id,c.name,"
+            + "a.name,s.address_details,s.latitude,s.longitude,s.description FROM partner_stores s"
+            + " JOIN partner_owners p ON p.id=s.partner_id JOIN categories k ON k.id=s.category_id"
+            + " JOIN cities c ON c.id=s.city_id JOIN addresses a ON a.id=s.address_id"
+            + " WHERE s.status='ACTIVE' AND p.status='ACTIVE'" + filter + " ORDER BY k.name,s.name,s.id",
+        (r, i) -> {
+          var id = UUID.fromString(r.getString(1));
+          return new PublicStore(id, r.getString(2), r.getString(3), r.getBigDecimal(4),
+              r.getString(5), UUID.fromString(r.getString(6)), r.getString(7), r.getString(8),
+              r.getString(9), r.getBigDecimal(10), r.getBigDecimal(11), r.getString(12),
+              hours.getOrDefault(id, List.of()));
+        },
+        args);
+  }
+
+  private Map<UUID, List<StoreHours>> hoursOf(String sql, Object... args) {
+    var result = new HashMap<UUID, List<StoreHours>>();
+    jdbc.query(sql + " ORDER BY h.weekday", (RowCallbackHandler) r -> {
+      Time opens = r.getTime(4), closes = r.getTime(5);
+      result.computeIfAbsent(UUID.fromString(r.getString(1)), k -> new ArrayList<>())
+          .add(new StoreHours(r.getInt(2), r.getBoolean(3),
+              opens == null ? null : opens.toLocalTime(), closes == null ? null : closes.toLocalTime()));
+    }, args);
+    return result;
+  }
+
+  private static StoreDetail detail(ResultSet r, Map<UUID, List<StoreHours>> hours)
+      throws SQLException {
+    var id = UUID.fromString(r.getString(1));
+    return new StoreDetail(
+        id,
+        r.getString(2),
+        UUID.fromString(r.getString(3)),
+        r.getString(4),
+        UUID.fromString(r.getString(5)),
+        r.getString(6),
+        UUID.fromString(r.getString(7)),
+        r.getString(8),
+        r.getString(9),
+        r.getString(10),
+        r.getBigDecimal(11),
+        r.getBigDecimal(12),
+        r.getString(13),
+        r.getString(14),
+        r.getString(15),
+        hours.getOrDefault(id, List.of()));
+  }
+
+  // ---- reference lists ----
 
   public List<Reference> cities() {
     return jdbc.query(
@@ -191,12 +361,14 @@ public final class PartnerRepository {
         name);
   }
 
-  public boolean lockActiveBranch(UUID branch, UUID owner) {
+  // ---- employees ----
+
+  /** Locks an ACTIVE store of the given partner (employee assignment target). */
+  public boolean lockActiveStore(UUID store, UUID owner) {
     return !jdbc.queryForList(
-            "SELECT b.id FROM partner_branches b JOIN partner_establishments e ON"
-                + " e.id=b.establishment_id WHERE b.id=? AND e.partner_id=? AND b.status='ACTIVE'"
-                + " AND e.status='ACTIVE' FOR UPDATE",
-            branch.toString(),
+            "SELECT id FROM partner_stores WHERE id=? AND partner_id=? AND status='ACTIVE'"
+                + " FOR UPDATE",
+            store.toString(),
             owner.toString())
         .isEmpty();
   }
@@ -208,11 +380,15 @@ public final class PartnerRepository {
         owner.toString());
   }
 
-  public void assignBranch(UUID employee, UUID branch) {
+  public void assignStore(UUID employee, UUID store) {
     jdbc.update(
-        "INSERT INTO partner_employee_branches(user_id,branch_id) VALUES (?,?)",
+        "INSERT INTO partner_employee_stores(user_id,store_id) VALUES (?,?)",
         employee.toString(),
-        branch.toString());
+        store.toString());
+  }
+
+  public void clearStores(UUID employee) {
+    jdbc.update("DELETE FROM partner_employee_stores WHERE user_id=?", employee.toString());
   }
 
   public boolean lockEmployee(UUID employee, UUID owner) {
@@ -221,6 +397,24 @@ public final class PartnerRepository {
             employee.toString(),
             owner.toString())
         .isEmpty();
+  }
+
+  public List<EmployeeAssignment> employees(UUID owner) {
+    var stores = new LinkedHashMap<UUID, Set<UUID>>();
+    jdbc.query(
+        "SELECT x.user_id,es.store_id FROM partner_employees x LEFT JOIN"
+            + " partner_employee_stores es ON es.user_id=x.user_id WHERE x.related_id=? ORDER"
+            + " BY x.user_id",
+        (RowCallbackHandler)
+            r -> {
+              var set =
+                  stores.computeIfAbsent(UUID.fromString(r.getString(1)), k -> new LinkedHashSet<>());
+              if (r.getString(2) != null) set.add(UUID.fromString(r.getString(2)));
+            },
+        owner.toString());
+    return stores.entrySet().stream()
+        .map(e -> new EmployeeAssignment(e.getKey(), Set.copyOf(e.getValue())))
+        .toList();
   }
 
   public void audit(UUID partner, UUID actor, String action, Instant now) {
@@ -233,216 +427,28 @@ public final class PartnerRepository {
         Timestamp.from(now));
   }
 
-  /**
-   * One page of partners with establishment names and branch count in a single query.
-   * With a search text, matches an establishment name or one of the given owner accounts.
-   */
-  public List<OwnerListing> ownerPage(
-      String search, Collection<UUID> matchingAccounts, int offset, int limit) {
-    var sql =
-        new StringBuilder(
-            "SELECT p.id,p.account_id,p.status,p.minimum_discount_percent,"
-                + " (SELECT array_agg(e.name ORDER BY e.name) FROM partner_establishments e"
-                + " WHERE e.partner_id=p.id),"
-                + " (SELECT COUNT(*) FROM partner_branches b JOIN partner_establishments e ON"
-                + " e.id=b.establishment_id WHERE e.partner_id=p.id),"
-                + " (SELECT min(e.name) FROM partner_establishments e WHERE e.partner_id=p.id) AS"
-                + " sort_name FROM partner_owners p");
-    var args = new ArrayList<Object>();
-    if (search != null) {
-      sql.append(
-          " WHERE (EXISTS (SELECT 1 FROM partner_establishments e WHERE e.partner_id=p.id AND"
-              + " lower(e.name) LIKE ? ESCAPE '\\')");
-      args.add(
-          "%"
-              + search.toLowerCase(Locale.ROOT)
-                  .replace("\\", "\\\\")
-                  .replace("%", "\\%")
-                  .replace("_", "\\_")
-              + "%");
-      if (!matchingAccounts.isEmpty()) {
-        sql.append(" OR p.account_id IN (")
-            .append(String.join(",", Collections.nCopies(matchingAccounts.size(), "?")))
-            .append(")");
-        matchingAccounts.forEach(a -> args.add(a.toString()));
-      }
-      sql.append(")");
-    }
-    sql.append(" ORDER BY sort_name NULLS LAST, p.id OFFSET ? LIMIT ?");
-    args.add(Math.max(0, offset));
-    args.add(Math.max(1, Math.min(limit, 100)));
-    return jdbc.query(
-        sql.toString(),
-        (r, i) -> {
-          var names = r.getArray(5);
-          return new OwnerListing(
-              UUID.fromString(r.getString(1)),
-              UUID.fromString(r.getString(2)),
-              r.getString(3),
-              r.getBigDecimal(4),
-              names == null ? List.of() : List.of((String[]) names.getArray()),
-              r.getInt(6));
-        },
-        args.toArray());
-  }
+  // ---- login eligibility ----
 
-  /** All establishments and branches of one partner, every status, with reference names. */
-  public List<EstablishmentDetail> establishmentDetails(UUID partner) {
-    return jdbc.query(
-        "SELECT e.id,e.name,e.category_id,c.name,e.contact_phone,e.status FROM"
-            + " partner_establishments e JOIN categories c ON c.id=e.category_id WHERE"
-            + " e.partner_id=? ORDER BY e.name,e.id",
-        (r, i) -> {
-          UUID id = UUID.fromString(r.getString(1));
-          return new EstablishmentDetail(
-              id,
-              r.getString(2),
-              UUID.fromString(r.getString(3)),
-              r.getString(4),
-              r.getString(5),
-              r.getString(6),
-              branchDetails(id));
-        },
-        partner.toString());
-  }
-
-  private List<BranchDetail> branchDetails(UUID establishment) {
-    return jdbc.query(
-        "SELECT b.id,b.name,b.city_id,c.name,b.address_id,a.name,b.address_details,b.status FROM"
-            + " partner_branches b JOIN cities c ON c.id=b.city_id JOIN addresses a ON"
-            + " a.id=b.address_id WHERE b.establishment_id=? ORDER BY b.name,b.id",
-        (r, i) ->
-            new BranchDetail(
-                UUID.fromString(r.getString(1)),
-                r.getString(2),
-                UUID.fromString(r.getString(3)),
-                r.getString(4),
-                UUID.fromString(r.getString(5)),
-                r.getString(6),
-                r.getString(7),
-                r.getString(8)),
-        establishment.toString());
-  }
-
-  /** Locks the establishment only when it belongs to the partner; returns its status. */
-  public Optional<String> lockEstablishment(UUID establishment, UUID partner) {
-    return jdbc
-        .queryForList(
-            "SELECT status FROM partner_establishments WHERE id=? AND partner_id=? FOR UPDATE",
-            String.class,
-            establishment.toString(),
-            partner.toString())
-        .stream()
-        .findFirst();
-  }
-
-  public void updateEstablishment(UUID id, String name, UUID category, String contact) {
-    jdbc.update(
-        "UPDATE partner_establishments SET name=?,category_id=?,contact_phone=? WHERE id=?",
-        name,
-        category.toString(),
-        contact,
-        id.toString());
-  }
-
-  /** Locks the branch only when it belongs to one of the partner's establishments. */
-  public Optional<String> lockBranch(UUID branch, UUID partner) {
-    return jdbc
-        .queryForList(
-            "SELECT b.status FROM partner_branches b JOIN partner_establishments e ON"
-                + " e.id=b.establishment_id WHERE b.id=? AND e.partner_id=? FOR UPDATE OF b",
-            String.class,
-            branch.toString(),
-            partner.toString())
-        .stream()
-        .findFirst();
-  }
-
-  public void updateBranch(UUID id, String name, UUID city, UUID address, String details) {
-    jdbc.update(
-        "UPDATE partner_branches SET name=?,city_id=?,address_id=?,address_details=? WHERE id=?",
-        name,
-        city.toString(),
-        address.toString(),
-        details,
-        id.toString());
-  }
-
-  public void setBranchStatus(UUID id, String status) {
-    jdbc.update("UPDATE partner_branches SET status=? WHERE id=?", status, id.toString());
-  }
-
-  public void updateDiscount(UUID partner, BigDecimal minimum) {
-    jdbc.update(
-        "UPDATE partner_owners SET minimum_discount_percent=? WHERE id=?",
-        minimum,
-        partner.toString());
-  }
-
-  public List<EmployeeAssignment> employees(UUID owner) {
-    var branches = new LinkedHashMap<UUID, Set<UUID>>();
-    jdbc.query(
-        "SELECT x.user_id,eb.branch_id FROM partner_employees x LEFT JOIN"
-            + " partner_employee_branches eb ON eb.user_id=x.user_id WHERE x.related_id=? ORDER"
-            + " BY x.user_id",
-        (org.springframework.jdbc.core.RowCallbackHandler)
-            r -> {
-              var set =
-                  branches.computeIfAbsent(
-                      UUID.fromString(r.getString(1)), k -> new LinkedHashSet<>());
-              if (r.getString(2) != null) set.add(UUID.fromString(r.getString(2)));
-            },
-        owner.toString());
-    return branches.entrySet().stream()
-        .map(e -> new EmployeeAssignment(e.getKey(), Set.copyOf(e.getValue())))
-        .toList();
-  }
-
-  public void clearBranches(UUID employee) {
-    jdbc.update("DELETE FROM partner_employee_branches WHERE user_id=?", employee.toString());
-  }
-
+  /** An employee works only while its partner is active and it has an active assigned store. */
   public boolean employeeCanLogin(UUID account) {
     return exists(
         "SELECT EXISTS(SELECT 1 FROM partner_employees x JOIN partner_owners p ON p.id=x.related_id"
-            + " JOIN partner_employee_branches eb ON eb.user_id=x.user_id JOIN partner_branches b"
-            + " ON b.id=eb.branch_id JOIN partner_establishments e ON e.id=b.establishment_id AND"
-            + " e.partner_id=p.id WHERE x.user_id=? AND p.status='ACTIVE' AND e.status='ACTIVE' AND"
-            + " b.status='ACTIVE')",
+            + " JOIN partner_employee_stores es ON es.user_id=x.user_id JOIN partner_stores s ON"
+            + " s.id=es.store_id AND s.partner_id=p.id WHERE x.user_id=? AND p.status='ACTIVE' AND"
+            + " s.status='ACTIVE')",
         account);
   }
 
+  /**
+   * An active partner may log in even when all its stores are suspended, so it can manage them
+   * (user decision 2026-11-19); selling needs an active store.
+   */
   public boolean ownerCanLogin(UUID account) {
     return exists(
-        "SELECT EXISTS(SELECT 1 FROM partner_owners p JOIN partner_establishments e ON"
-            + " e.partner_id=p.id WHERE p.account_id=? AND p.status='ACTIVE' AND"
-            + " e.status='ACTIVE')",
+        "SELECT EXISTS(SELECT 1 FROM partner_owners WHERE account_id=? AND status='ACTIVE')",
         account);
   }
 
-  /** Guest directory: active establishments of active partners with at least one active branch. */
-  /** city null = every city; otherwise only establishments with an active branch in that city. */
-  public List<PublicEstablishment> publicDirectory(UUID city) {
-    var cities = new HashMap<UUID, List<String>>();
-    jdbc.query(
-        "SELECT DISTINCT b.establishment_id,c.name FROM partner_branches b JOIN cities c ON c.id=b.city_id"
-            + " WHERE b.status='ACTIVE' ORDER BY c.name",
-        (org.springframework.jdbc.core.RowCallbackHandler)
-            r -> cities.computeIfAbsent(UUID.fromString(r.getString(1)), k -> new ArrayList<>()).add(r.getString(2)));
-    return jdbc.query(
-        "SELECT e.id,e.name,k.name,p.minimum_discount_percent,e.contact_phone FROM partner_establishments e"
-            + " JOIN partner_owners p ON p.id=e.partner_id JOIN categories k ON k.id=e.category_id"
-            + " WHERE p.status='ACTIVE' AND e.status='ACTIVE' AND (CAST(? AS varchar) IS NULL OR EXISTS"
-            + " (SELECT 1 FROM partner_branches fb WHERE fb.establishment_id=e.id AND fb.status='ACTIVE'"
-            + " AND fb.city_id=?)) ORDER BY k.name,e.name",
-        (r, i) -> {
-          var id = UUID.fromString(r.getString(1));
-          return new PublicEstablishment(id, r.getString(2), r.getString(3), r.getBigDecimal(4),
-              r.getString(5), List.copyOf(cities.getOrDefault(id, List.of())));
-        },
-        city == null ? null : city.toString(),
-        city == null ? null : city.toString()).stream().filter(e -> !e.cities().isEmpty()).toList();
-  }
   public boolean hasOwnerAccount(UUID account) {
     return exists("SELECT EXISTS(SELECT 1 FROM partner_owners WHERE account_id=?)", account);
   }

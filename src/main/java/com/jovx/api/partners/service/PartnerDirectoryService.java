@@ -1,6 +1,6 @@
 package com.jovx.api.partners.service;
 
-import com.jovx.api.partners.model.PartnerModels.PublicEstablishment;
+import com.jovx.api.partners.model.PartnerModels.PublicStore;
 import com.jovx.api.partners.repository.PartnerRepository;
 import java.util.List;
 import org.springframework.context.annotation.Profile;
@@ -15,8 +15,8 @@ public class PartnerDirectoryService {
     this.repository = repository;
   }
 
-  /** Discount shown is the partner-wide minimum; the public contact phone is optional. */
-  public List<PublicEstablishment> publicDirectory(java.util.UUID city) {
+  /** Active stores of active partners; the discount shown is the partner-wide minimum. */
+  public List<PublicStore> publicDirectory(java.util.UUID city) {
     return repository.publicDirectory(city);
   }
 }

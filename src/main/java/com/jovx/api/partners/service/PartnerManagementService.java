@@ -6,6 +6,7 @@ import com.jovx.api.partners.repository.PartnerRepository;
 import com.jovx.api.security.api.*;
 import java.math.BigDecimal;
 import java.time.Clock;
+import java.time.LocalTime;
 import java.util.*;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Profile;
@@ -15,15 +16,15 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * Establishments, branches and discount after registration. Approved 2026-11-17:
- * establishments are added/edited by administration (partner.create) and by the owning Partner;
- * branches by administration (partner.branch.manage) and the owning Partner; any branch may be
- * suspended; the partner-wide minimum discount is administration-only (partner.create).
+ * Stores and discount after registration (decision 2026-11-19, docs/partner-stores-plan-ar.md):
+ * stores are added, edited, suspended and given hours by administration (partner.store.manage)
+ * and by the owning Partner; any store may be suspended; the partner-wide minimum discount is
+ * administration-only (partner.create).
  */
 @Service
 @Profile("local-postgres")
 public class PartnerManagementService {
-  static final String CREATE = "partner.create", BRANCHES = "partner.branch.manage";
+  static final String CREATE = "partner.create", STORES = "partner.store.manage";
   private final PartnerRepository repository;
   private final TransactionTemplate tx;
   private final AdministrationAccess admin;
@@ -50,12 +51,12 @@ public class PartnerManagementService {
 
   /**
    * One page (default 20) of partners; the search matches the owner's name or login phone, or an
-   * establishment name. Three queries per page regardless of size (no per-partner queries).
+   * store name. Three queries per page regardless of size (no per-partner queries).
    */
   public List<PartnerSummary> list(UUID actor, UUID sid, String query, int offset, int limit) {
     return tx.execute(
         s -> {
-          admin.requireAny(actor, sid, Set.of(CREATE, BRANCHES));
+          admin.requireAny(actor, sid, Set.of(CREATE, STORES));
           String search = query == null || query.isBlank() ? null : query.strip();
           List<UUID> owners =
               search == null ? List.of() : directory.search("PARTNER", search, 100);
@@ -72,8 +73,8 @@ public class PartnerManagementService {
                         account == null ? null : account.phone(),
                         o.status(),
                         o.minimum(),
-                        o.establishmentNames(),
-                        o.branchCount());
+                        o.storeNames(),
+                        o.storeCount());
                   })
               .toList();
         });
@@ -82,7 +83,7 @@ public class PartnerManagementService {
   public PartnerDetail detail(UUID actor, UUID sid, UUID partner) {
     return tx.execute(
         s -> {
-          admin.requireAny(actor, sid, Set.of(CREATE, BRANCHES));
+          admin.requireAny(actor, sid, Set.of(CREATE, STORES));
           return detail(owner(partner, false));
         });
   }
@@ -100,47 +101,37 @@ public class PartnerManagementService {
         });
   }
 
-  public EstablishmentCreatedResponse adminAddEstablishment(
-      UUID actor, UUID sid, UUID partner, NewEstablishmentRequest request) {
+  public StoreCreatedResponse adminAddStore(UUID actor, UUID sid, UUID partner, StoreRequest request) {
     return tx.execute(
         s -> {
-          admin.require(actor, sid, CREATE);
-          return addEstablishment(actor, owner(partner, true), request);
+          admin.require(actor, sid, STORES);
+          return addStore(actor, owner(partner, true), request);
         });
   }
 
-  public void adminEditEstablishment(
-      UUID actor, UUID sid, UUID partner, UUID establishment, EstablishmentRequest request) {
+  public void adminEditStore(
+      UUID actor, UUID sid, UUID partner, UUID store, StoreRequest request) {
     tx.executeWithoutResult(
         s -> {
-          admin.require(actor, sid, CREATE);
-          editEstablishment(actor, owner(partner, true), establishment, request);
+          admin.require(actor, sid, STORES);
+          editStore(actor, owner(partner, true), store, request);
         });
   }
 
-  public BranchCreatedResponse adminAddBranch(
-      UUID actor, UUID sid, UUID partner, UUID establishment, BranchRequest request) {
-    return tx.execute(
-        s -> {
-          admin.require(actor, sid, BRANCHES);
-          return addBranch(actor, owner(partner, true), establishment, request);
-        });
-  }
-
-  public void adminEditBranch(
-      UUID actor, UUID sid, UUID partner, UUID branch, BranchRequest request) {
+  public void adminStoreStatus(UUID actor, UUID sid, UUID partner, UUID store, String status) {
     tx.executeWithoutResult(
         s -> {
-          admin.require(actor, sid, BRANCHES);
-          editBranch(actor, owner(partner, true), branch, request);
+          admin.require(actor, sid, STORES);
+          storeStatus(actor, owner(partner, true), store, status);
         });
   }
 
-  public void adminBranchStatus(UUID actor, UUID sid, UUID partner, UUID branch, String status) {
+  public void adminStoreHours(
+      UUID actor, UUID sid, UUID partner, UUID store, StoreHoursRequest request) {
     tx.executeWithoutResult(
         s -> {
-          admin.require(actor, sid, BRANCHES);
-          branchStatus(actor, owner(partner, true), branch, status);
+          admin.require(actor, sid, STORES);
+          storeHours(actor, owner(partner, true), store, request);
         });
   }
 
@@ -150,27 +141,20 @@ public class PartnerManagementService {
     return tx.execute(s -> detail(self(actor, sid)));
   }
 
-  public EstablishmentCreatedResponse ownAddEstablishment(
-      UUID actor, UUID sid, NewEstablishmentRequest request) {
-    return tx.execute(s -> addEstablishment(actor, self(actor, sid), request));
+  public StoreCreatedResponse ownAddStore(UUID actor, UUID sid, StoreRequest request) {
+    return tx.execute(s -> addStore(actor, self(actor, sid), request));
   }
 
-  public void ownEditEstablishment(
-      UUID actor, UUID sid, UUID establishment, EstablishmentRequest request) {
-    tx.executeWithoutResult(s -> editEstablishment(actor, self(actor, sid), establishment, request));
+  public void ownEditStore(UUID actor, UUID sid, UUID store, StoreRequest request) {
+    tx.executeWithoutResult(s -> editStore(actor, self(actor, sid), store, request));
   }
 
-  public BranchCreatedResponse ownAddBranch(
-      UUID actor, UUID sid, UUID establishment, BranchRequest request) {
-    return tx.execute(s -> addBranch(actor, self(actor, sid), establishment, request));
+  public void ownStoreStatus(UUID actor, UUID sid, UUID store, String status) {
+    tx.executeWithoutResult(s -> storeStatus(actor, self(actor, sid), store, status));
   }
 
-  public void ownEditBranch(UUID actor, UUID sid, UUID branch, BranchRequest request) {
-    tx.executeWithoutResult(s -> editBranch(actor, self(actor, sid), branch, request));
-  }
-
-  public void ownBranchStatus(UUID actor, UUID sid, UUID branch, String status) {
-    tx.executeWithoutResult(s -> branchStatus(actor, self(actor, sid), branch, status));
+  public void ownStoreHours(UUID actor, UUID sid, UUID store, StoreHoursRequest request) {
+    tx.executeWithoutResult(s -> storeHours(actor, self(actor, sid), store, request));
   }
 
   // ---- shared rules ----
@@ -184,91 +168,86 @@ public class PartnerManagementService {
         account == null ? null : account.phone(),
         owner.status(),
         owner.minimum(),
-        repository.establishmentDetails(owner.id()));
+        repository.storeDetails(owner.id()));
   }
 
-  private EstablishmentCreatedResponse addEstablishment(
-      UUID actor, Owner owner, NewEstablishmentRequest request) {
-    requireCategory(request.categoryId());
-    requireLocation(request.cityId(), request.addressId());
-    // A pending partner's extra establishments are activated together with the partner.
+  private StoreCreatedResponse addStore(UUID actor, Owner owner, StoreRequest request) {
+    var data = validated(request);
+    // A pending partner's extra stores are activated together with the partner.
     String status = "ACTIVE".equals(owner.status()) ? "ACTIVE" : "PENDING";
-    UUID establishment = UUID.randomUUID(), branch = UUID.randomUUID();
-    repository.insertEstablishment(
-        establishment,
-        owner.id(),
-        request.categoryId(),
-        request.name().strip(),
-        optional(request.contactPhone()),
-        status);
-    repository.insertBranch(
-        branch,
-        establishment,
-        request.branchName().strip(),
-        request.cityId(),
-        request.addressId(),
-        optional(request.addressDetails()));
-    repository.audit(owner.id(), actor, "ESTABLISHMENT_CREATED", clock.instant());
-    return new EstablishmentCreatedResponse(establishment, branch, status);
+    UUID store = UUID.randomUUID();
+    repository.insertStore(store, owner.id(), data, status, clock.instant());
+    repository.audit(owner.id(), actor, "STORE_CREATED", clock.instant());
+    return new StoreCreatedResponse(store, status);
   }
 
-  private void editEstablishment(
-      UUID actor, Owner owner, UUID establishment, EstablishmentRequest request) {
-    if (repository.lockEstablishment(establishment, owner.id()).isEmpty())
-      throw error(Kind.NOT_FOUND, "ESTABLISHMENT_NOT_FOUND");
-    requireCategory(request.categoryId());
+  private void editStore(UUID actor, Owner owner, UUID store, StoreRequest request) {
+    if (repository.lockStore(store, owner.id()).isEmpty())
+      throw error(Kind.NOT_FOUND, "STORE_NOT_FOUND");
     // Contact phone is independent of the login phone; this never touches credentials.
-    repository.updateEstablishment(
-        establishment,
-        request.name().strip(),
-        request.categoryId(),
-        optional(request.contactPhone()));
-    repository.audit(owner.id(), actor, "ESTABLISHMENT_UPDATED", clock.instant());
+    repository.updateStore(store, validated(request));
+    repository.audit(owner.id(), actor, "STORE_UPDATED", clock.instant());
   }
 
-  private BranchCreatedResponse addBranch(
-      UUID actor, Owner owner, UUID establishment, BranchRequest request) {
-    if (repository.lockEstablishment(establishment, owner.id()).isEmpty())
-      throw error(Kind.NOT_FOUND, "ESTABLISHMENT_NOT_FOUND");
-    requireLocation(request.cityId(), request.addressId());
-    UUID branch = UUID.randomUUID();
-    repository.insertBranch(
-        branch,
-        establishment,
-        request.name().strip(),
-        request.cityId(),
-        request.addressId(),
-        optional(request.addressDetails()));
-    repository.audit(owner.id(), actor, "BRANCH_CREATED", clock.instant());
-    return new BranchCreatedResponse(branch, "ACTIVE");
-  }
-
-  private void editBranch(UUID actor, Owner owner, UUID branch, BranchRequest request) {
-    if (repository.lockBranch(branch, owner.id()).isEmpty())
-      throw error(Kind.NOT_FOUND, "BRANCH_NOT_FOUND");
-    requireLocation(request.cityId(), request.addressId());
-    repository.updateBranch(
-        branch,
-        request.name().strip(),
-        request.cityId(),
-        request.addressId(),
-        optional(request.addressDetails()));
-    repository.audit(owner.id(), actor, "BRANCH_UPDATED", clock.instant());
-  }
-
-  private void branchStatus(UUID actor, Owner owner, UUID branch, String status) {
+  /** Any store may be suspended; employees assigned only to suspended stores cannot log in. */
+  private void storeStatus(UUID actor, Owner owner, UUID store, String status) {
     var current =
         repository
-            .lockBranch(branch, owner.id())
-            .orElseThrow(() -> error(Kind.NOT_FOUND, "BRANCH_NOT_FOUND"));
+            .lockStore(store, owner.id())
+            .orElseThrow(() -> error(Kind.NOT_FOUND, "STORE_NOT_FOUND"));
     if (current.equals(status)) return;
-    // Employees assigned only to suspended branches lose login eligibility on their next request.
-    repository.setBranchStatus(branch, status);
+    if ("PENDING".equals(current))
+      throw error(Kind.CONFLICT, "STORE_PENDING_ACTIVATION");
+    repository.setStoreStatus(store, status);
     repository.audit(
         owner.id(),
         actor,
-        "ACTIVE".equals(status) ? "BRANCH_REACTIVATED" : "BRANCH_SUSPENDED",
+        "ACTIVE".equals(status) ? "STORE_REACTIVATED" : "STORE_SUSPENDED",
         clock.instant());
+  }
+
+  private void storeHours(UUID actor, Owner owner, UUID store, StoreHoursRequest request) {
+    if (repository.lockStore(store, owner.id()).isEmpty())
+      throw error(Kind.NOT_FOUND, "STORE_NOT_FOUND");
+    final List<StoreHours> week;
+    try {
+      week =
+          request.days().stream()
+              .map(
+                  d ->
+                      new StoreHours(
+                          d.weekday(),
+                          d.closed(),
+                          d.opensAt() == null ? null : LocalTime.parse(d.opensAt()),
+                          d.closesAt() == null ? null : LocalTime.parse(d.closesAt())))
+              .toList();
+    } catch (java.time.format.DateTimeParseException ex) {
+      throw error(Kind.INVALID, "INVALID_STORE_HOURS");
+    }
+    String failure = StoreHours.validateWeek(week);
+    if (failure != null) throw error(Kind.INVALID, failure);
+    repository.replaceHours(store, week);
+    repository.audit(owner.id(), actor, "STORE_HOURS_CHANGED", clock.instant());
+  }
+
+  /** Normalizes optional text and checks references, map point and name. */
+  private StoreData validated(StoreRequest request) {
+    var data =
+        new StoreData(
+            request.name() == null ? null : request.name().strip(),
+            request.categoryId(),
+            request.cityId(),
+            request.addressId(),
+            optional(request.addressDetails()),
+            optional(request.contactPhone()),
+            request.latitude(),
+            request.longitude(),
+            optional(request.description()));
+    String failure = data.validate();
+    if (failure != null) throw error(Kind.INVALID, failure);
+    requireCategory(data.categoryId());
+    requireLocation(data.cityId(), data.addressId());
+    return data;
   }
 
   private Owner owner(UUID partner, boolean lock) {

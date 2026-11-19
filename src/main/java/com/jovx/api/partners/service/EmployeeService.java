@@ -54,7 +54,7 @@ public class EmployeeService {
                         person == null ? null : person.name(),
                         person == null ? null : person.phone(),
                         person == null ? null : person.status(),
-                        a.branchIds(),
+                        a.storeIds(),
                         accounts.effectivePermissions(a.userId()));
                   })
               .sorted(
@@ -90,19 +90,19 @@ public class EmployeeService {
         });
   }
 
-  /** Replaces assigned branches; all must be active branches of the same Partner. */
-  public void branches(UUID actor, UUID sid, UUID employee, Set<UUID> branchIds) {
+  /** Replaces assigned stores; all must be active stores of the same Partner. */
+  public void stores(UUID actor, UUID sid, UUID employee, Set<UUID> storeIds) {
     tx.executeWithoutResult(
         s -> {
           UUID owner = owner(actor, sid, "employee.create");
           if (!repository.lockEmployee(employee, owner))
             throw error(Kind.NOT_FOUND, "EMPLOYEE_NOT_FOUND");
-          for (UUID branch : branchIds)
-            if (!repository.lockActiveBranch(branch, owner))
-              throw error(Kind.INVALID, "INVALID_EMPLOYEE_BRANCH");
-          repository.clearBranches(employee);
-          for (UUID branch : branchIds) repository.assignBranch(employee, branch);
-          repository.audit(owner, actor, "EMPLOYEE_BRANCHES_CHANGED", clock.instant());
+          for (UUID store : storeIds)
+            if (!repository.lockActiveStore(store, owner))
+              throw error(Kind.INVALID, "INVALID_EMPLOYEE_STORE");
+          repository.clearStores(employee);
+          for (UUID store : storeIds) repository.assignStore(employee, store);
+          repository.audit(owner, actor, "EMPLOYEE_STORES_CHANGED", clock.instant());
         });
   }
 
@@ -112,12 +112,12 @@ public class EmployeeService {
           UUID owner = owner(actor, sid, "employee.create");
           if (!request.permissions().isEmpty())
             access.requirePermission(actor, sid, "employee.permissions.manage");
-          for (UUID branch : request.branchIds())
-            if (!repository.lockActiveBranch(branch, owner))
-              throw error(Kind.INVALID, "INVALID_EMPLOYEE_BRANCH");
+          for (UUID store : request.storeIds())
+            if (!repository.lockActiveStore(store, owner))
+              throw error(Kind.INVALID, "INVALID_EMPLOYEE_STORE");
           UUID employee = accounts.create(request.name(), request.phone(), request.pin());
           repository.insertEmployee(employee, owner);
-          for (UUID branch : request.branchIds()) repository.assignBranch(employee, branch);
+          for (UUID store : request.storeIds()) repository.assignStore(employee, store);
           accounts.replacePermissions(actor, employee, request.permissions());
           repository.audit(owner, actor, "EMPLOYEE_CREATED", clock.instant());
           return new EmployeeCreatedResponse(
@@ -126,7 +126,7 @@ public class EmployeeService {
               "ACTIVE",
               "PARTNER",
               owner,
-              Set.copyOf(request.branchIds()),
+              Set.copyOf(request.storeIds()),
               Set.copyOf(request.permissions()));
         });
   }

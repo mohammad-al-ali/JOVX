@@ -49,26 +49,23 @@ public class PartnerService {
           if (!repository.categoryExists(request.categoryId())
               || !repository.addressBelongsToCity(request.addressId(), request.cityId()))
             throw error(Kind.INVALID, "INVALID_LOCATION_OR_CATEGORY");
+          var store =
+              new StoreData(
+                  request.storeName().strip(),
+                  request.categoryId(),
+                  request.cityId(),
+                  request.addressId(),
+                  optional(request.addressDetails()),
+                  optional(request.contactPhone()),
+                  null,
+                  null,
+                  null);
           UUID account = accounts.createPending(request.userName(), request.phone(), request.pin());
-          UUID partner = UUID.randomUUID(),
-              establishment = UUID.randomUUID(),
-              branch = UUID.randomUUID();
+          UUID partner = UUID.randomUUID(), storeId = UUID.randomUUID();
           repository.insertOwner(partner, account, request.discountPercent());
-          repository.insertEstablishment(
-              establishment,
-              partner,
-              request.categoryId(),
-              request.name().strip(),
-              optional(request.contactPhone()));
-          repository.insertBranch(
-              branch,
-              establishment,
-              request.branchName().strip(),
-              request.cityId(),
-              request.addressId(),
-              optional(request.addressDetails()));
+          repository.insertStore(storeId, partner, store, "PENDING", clock.instant());
           repository.audit(partner, actor, "PARTNER_CREATED", clock.instant());
-          return new PartnerCreatedResponse(partner, account, establishment, branch, "PENDING");
+          return new PartnerCreatedResponse(partner, account, storeId, "PENDING");
         });
   }
 
@@ -83,8 +80,8 @@ public class PartnerService {
           if ("ACTIVE".equals(owner.status())) return;
           if (!"PENDING".equals(owner.status()))
             throw error(Kind.CONFLICT, "PARTNER_NOT_PENDING");
-          // Extra establishments added while pending are activated together with the partner.
-          if (repository.establishmentCount(partner) == 0)
+          // Extra stores added while pending are activated together with the partner.
+          if (repository.storeCount(partner) == 0)
             throw error(Kind.CONFLICT, "INITIAL_REGISTRATION_REQUIRED");
           accounts.activate(owner.accountId());
           repository.activateRegistration(partner);
@@ -98,7 +95,7 @@ public class PartnerService {
             .activeOwner(account, false)
             .orElseThrow(() -> error(Kind.FORBIDDEN, "FORBIDDEN"));
     return new PartnerContextResponse(
-        owner.id(), owner.minimum(), repository.establishments(owner.id()));
+        owner.id(), owner.minimum(), repository.activeStores(owner.id()));
   }
 
   public ReferenceDataResponse referenceData() {

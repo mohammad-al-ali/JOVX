@@ -15,7 +15,7 @@ public interface PartnerLookup {
   /** Every partner, for administration lists. */
   List<PartnerRef> all();
 
-  /** status: PENDING, ACTIVE or SUSPENDED. name: the partner's establishment names joined. */
+  /** status: PENDING, ACTIVE or SUSPENDED. name: the partner's store names joined. */
   record PartnerRef(UUID id, String status, String name) {
     public boolean active() {
       return "ACTIVE".equals(status);

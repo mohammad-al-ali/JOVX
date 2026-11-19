@@ -11,15 +11,16 @@ import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import org.springframework.web.bind.annotation.*;
 
-/** Post-registration management: administration paths and the owning Partner's own paths. */
+/** Post-registration management of a partner's stores: administration paths and the owner's own. */
 @RestController
 @Profile("local-postgres")
 public class PartnerManagementController {
   private static final String ADMIN_READ =
-      "hasRole('SUPER_ADMIN') or hasAnyAuthority('partner.create','partner.branch.manage')";
+      "hasRole('SUPER_ADMIN') or hasAnyAuthority('partner.create','partner.store.manage')";
   private static final String ADMIN_CREATE = "hasRole('SUPER_ADMIN') or hasAuthority('partner.create')";
-  private static final String ADMIN_BRANCHES =
-      "hasRole('SUPER_ADMIN') or hasAuthority('partner.branch.manage')";
+  private static final String ADMIN_STORES =
+      "hasRole('SUPER_ADMIN') or hasAuthority('partner.store.manage')";
+  private static final String OWNER = "hasRole('PARTNER')";
   private final PartnerManagementService partners;
 
   public PartnerManagementController(PartnerManagementService partners) {
@@ -54,114 +55,93 @@ public class PartnerManagementController {
     partners.discount(id(actor), sid(actor), partnerId, body.discountPercent());
   }
 
-  @PostMapping("/api/v1/admin/partners/{partnerId}/establishments")
+  @PostMapping("/api/v1/admin/partners/{partnerId}/stores")
   @ResponseStatus(HttpStatus.CREATED)
-  @PreAuthorize(ADMIN_CREATE)
-  public EstablishmentCreatedResponse addEstablishment(
+  @PreAuthorize(ADMIN_STORES)
+  public StoreCreatedResponse addStore(
       JwtAuthenticationToken actor,
       @PathVariable UUID partnerId,
-      @Valid @RequestBody NewEstablishmentRequest body) {
-    return partners.adminAddEstablishment(id(actor), sid(actor), partnerId, body);
+      @Valid @RequestBody StoreRequest body) {
+    return partners.adminAddStore(id(actor), sid(actor), partnerId, body);
   }
 
-  @PutMapping("/api/v1/admin/partners/{partnerId}/establishments/{establishmentId}")
+  @PutMapping("/api/v1/admin/partners/{partnerId}/stores/{storeId}")
   @ResponseStatus(HttpStatus.NO_CONTENT)
-  @PreAuthorize(ADMIN_CREATE)
-  public void editEstablishment(
+  @PreAuthorize(ADMIN_STORES)
+  public void editStore(
       JwtAuthenticationToken actor,
       @PathVariable UUID partnerId,
-      @PathVariable UUID establishmentId,
-      @Valid @RequestBody EstablishmentRequest body) {
-    partners.adminEditEstablishment(id(actor), sid(actor), partnerId, establishmentId, body);
+      @PathVariable UUID storeId,
+      @Valid @RequestBody StoreRequest body) {
+    partners.adminEditStore(id(actor), sid(actor), partnerId, storeId, body);
   }
 
-  @PostMapping("/api/v1/admin/partners/{partnerId}/establishments/{establishmentId}/branches")
-  @ResponseStatus(HttpStatus.CREATED)
-  @PreAuthorize(ADMIN_BRANCHES)
-  public BranchCreatedResponse addBranch(
-      JwtAuthenticationToken actor,
-      @PathVariable UUID partnerId,
-      @PathVariable UUID establishmentId,
-      @Valid @RequestBody BranchRequest body) {
-    return partners.adminAddBranch(id(actor), sid(actor), partnerId, establishmentId, body);
-  }
-
-  @PutMapping("/api/v1/admin/partners/{partnerId}/branches/{branchId}")
+  @PutMapping("/api/v1/admin/partners/{partnerId}/stores/{storeId}/status")
   @ResponseStatus(HttpStatus.NO_CONTENT)
-  @PreAuthorize(ADMIN_BRANCHES)
-  public void editBranch(
+  @PreAuthorize(ADMIN_STORES)
+  public void storeStatus(
       JwtAuthenticationToken actor,
       @PathVariable UUID partnerId,
-      @PathVariable UUID branchId,
-      @Valid @RequestBody BranchRequest body) {
-    partners.adminEditBranch(id(actor), sid(actor), partnerId, branchId, body);
-  }
-
-  @PutMapping("/api/v1/admin/partners/{partnerId}/branches/{branchId}/status")
-  @ResponseStatus(HttpStatus.NO_CONTENT)
-  @PreAuthorize(ADMIN_BRANCHES)
-  public void branchStatus(
-      JwtAuthenticationToken actor,
-      @PathVariable UUID partnerId,
-      @PathVariable UUID branchId,
+      @PathVariable UUID storeId,
       @Valid @RequestBody StatusRequest body) {
-    partners.adminBranchStatus(id(actor), sid(actor), partnerId, branchId, body.status());
+    partners.adminStoreStatus(id(actor), sid(actor), partnerId, storeId, body.status());
+  }
+
+  @PutMapping("/api/v1/admin/partners/{partnerId}/stores/{storeId}/hours")
+  @ResponseStatus(HttpStatus.NO_CONTENT)
+  @PreAuthorize(ADMIN_STORES)
+  public void storeHours(
+      JwtAuthenticationToken actor,
+      @PathVariable UUID partnerId,
+      @PathVariable UUID storeId,
+      @Valid @RequestBody StoreHoursRequest body) {
+    partners.adminStoreHours(id(actor), sid(actor), partnerId, storeId, body);
   }
 
   // ---- owning partner ----
 
   @GetMapping("/api/v1/partner/profile")
-  @PreAuthorize("hasRole('PARTNER')")
+  @PreAuthorize(OWNER)
   public PartnerDetail profile(JwtAuthenticationToken actor) {
     return partners.profile(id(actor), sid(actor));
   }
 
-  @PostMapping("/api/v1/partner/establishments")
+  @PostMapping("/api/v1/partner/stores")
   @ResponseStatus(HttpStatus.CREATED)
-  @PreAuthorize("hasRole('PARTNER')")
-  public EstablishmentCreatedResponse ownAddEstablishment(
-      JwtAuthenticationToken actor, @Valid @RequestBody NewEstablishmentRequest body) {
-    return partners.ownAddEstablishment(id(actor), sid(actor), body);
+  @PreAuthorize(OWNER)
+  public StoreCreatedResponse ownAddStore(
+      JwtAuthenticationToken actor, @Valid @RequestBody StoreRequest body) {
+    return partners.ownAddStore(id(actor), sid(actor), body);
   }
 
-  @PutMapping("/api/v1/partner/establishments/{establishmentId}")
+  @PutMapping("/api/v1/partner/stores/{storeId}")
   @ResponseStatus(HttpStatus.NO_CONTENT)
-  @PreAuthorize("hasRole('PARTNER')")
-  public void ownEditEstablishment(
+  @PreAuthorize(OWNER)
+  public void ownEditStore(
       JwtAuthenticationToken actor,
-      @PathVariable UUID establishmentId,
-      @Valid @RequestBody EstablishmentRequest body) {
-    partners.ownEditEstablishment(id(actor), sid(actor), establishmentId, body);
+      @PathVariable UUID storeId,
+      @Valid @RequestBody StoreRequest body) {
+    partners.ownEditStore(id(actor), sid(actor), storeId, body);
   }
 
-  @PostMapping("/api/v1/partner/establishments/{establishmentId}/branches")
-  @ResponseStatus(HttpStatus.CREATED)
-  @PreAuthorize("hasRole('PARTNER')")
-  public BranchCreatedResponse ownAddBranch(
-      JwtAuthenticationToken actor,
-      @PathVariable UUID establishmentId,
-      @Valid @RequestBody BranchRequest body) {
-    return partners.ownAddBranch(id(actor), sid(actor), establishmentId, body);
-  }
-
-  @PutMapping("/api/v1/partner/branches/{branchId}")
+  @PutMapping("/api/v1/partner/stores/{storeId}/status")
   @ResponseStatus(HttpStatus.NO_CONTENT)
-  @PreAuthorize("hasRole('PARTNER')")
-  public void ownEditBranch(
+  @PreAuthorize(OWNER)
+  public void ownStoreStatus(
       JwtAuthenticationToken actor,
-      @PathVariable UUID branchId,
-      @Valid @RequestBody BranchRequest body) {
-    partners.ownEditBranch(id(actor), sid(actor), branchId, body);
-  }
-
-  @PutMapping("/api/v1/partner/branches/{branchId}/status")
-  @ResponseStatus(HttpStatus.NO_CONTENT)
-  @PreAuthorize("hasRole('PARTNER')")
-  public void ownBranchStatus(
-      JwtAuthenticationToken actor,
-      @PathVariable UUID branchId,
+      @PathVariable UUID storeId,
       @Valid @RequestBody StatusRequest body) {
-    partners.ownBranchStatus(id(actor), sid(actor), branchId, body.status());
+    partners.ownStoreStatus(id(actor), sid(actor), storeId, body.status());
+  }
+
+  @PutMapping("/api/v1/partner/stores/{storeId}/hours")
+  @ResponseStatus(HttpStatus.NO_CONTENT)
+  @PreAuthorize(OWNER)
+  public void ownStoreHours(
+      JwtAuthenticationToken actor,
+      @PathVariable UUID storeId,
+      @Valid @RequestBody StoreHoursRequest body) {
+    partners.ownStoreHours(id(actor), sid(actor), storeId, body);
   }
 
   private static UUID id(JwtAuthenticationToken a) {

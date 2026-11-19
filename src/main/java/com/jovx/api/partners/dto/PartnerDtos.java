@@ -1,6 +1,7 @@
 package com.jovx.api.partners.dto;
 
 import com.jovx.api.partners.model.PartnerModels.*;
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.*;
 import java.math.BigDecimal;
 import java.util.*;
@@ -12,7 +13,7 @@ public final class PartnerDtos {
       @NotBlank @Size(max = 200) String name,
       @NotBlank @Size(max = 64) String phone,
       @NotNull @Pattern(regexp = "[0-9]{6}") String pin,
-      @NotEmpty Set<@NotNull UUID> branchIds,
+      @NotEmpty @Size(max = 200) Set<@NotNull UUID> storeIds,
       @NotNull @Size(max = 100) Set<@NotBlank String> permissions) {
     @Override
     public String toString() {
@@ -23,15 +24,15 @@ public final class PartnerDtos {
   public record EmployeePermissionsRequest(
       @NotNull @Size(max = 100) Set<@NotBlank String> permissions) {}
 
+  /** The partner's first store is created with the account; both stay PENDING until activation. */
   public record RegisterPartnerRequest(
       @NotBlank @Size(max = 200) String userName,
-      @NotBlank @Size(max = 200) String name,
+      @NotBlank @Size(max = 200) String storeName,
       @NotNull UUID categoryId,
       @NotBlank @Size(max = 64) String phone,
       @NotNull @Pattern(regexp = "[0-9]{6}") String pin,
       @NotNull @DecimalMin("0") @DecimalMax("100") @Digits(integer = 3, fraction = 2)
           BigDecimal discountPercent,
-      @NotBlank @Size(max = 200) String branchName,
       @NotNull UUID cityId,
       @NotNull UUID addressId,
       @Size(max = 500) String addressDetails,
@@ -48,14 +49,14 @@ public final class PartnerDtos {
       String status,
       String relatedEntity,
       UUID relatedId,
-      Set<UUID> branchIds,
+      Set<UUID> storeIds,
       Set<String> permissions) {}
 
+  /** Active stores only (for employee assignment); empty when every store is suspended. */
   public record PartnerContextResponse(
-      UUID partnerId, BigDecimal minimumDiscountPercent, List<Establishment> establishments) {}
+      UUID partnerId, BigDecimal minimumDiscountPercent, List<StoreRef> stores) {}
 
-  public record PartnerCreatedResponse(
-      UUID partnerId, UUID accountId, UUID establishmentId, UUID branchId, String status) {}
+  public record PartnerCreatedResponse(UUID partnerId, UUID accountId, UUID storeId, String status) {}
 
   /** defaults is null until administration chooses a default city and neighborhood. */
   public record ReferenceDataResponse(
@@ -84,8 +85,8 @@ public final class PartnerDtos {
       String phone,
       String status,
       BigDecimal minimumDiscountPercent,
-      List<String> establishmentNames,
-      int branchCount) {}
+      List<String> storeNames,
+      int storeCount) {}
 
   public record PartnerDetail(
       UUID partnerId,
@@ -94,36 +95,44 @@ public final class PartnerDtos {
       String phone,
       String status,
       BigDecimal minimumDiscountPercent,
-      List<EstablishmentDetail> establishments) {}
+      List<StoreDetail> stores) {}
 
   public record DiscountRequest(
       @NotNull @DecimalMin("0") @DecimalMax("100") @Digits(integer = 3, fraction = 2)
           BigDecimal discountPercent) {}
 
-  /** contactPhone is optional, independent of the login phone; null or blank clears it. */
-  public record EstablishmentRequest(
+  /**
+   * Create or edit a store. Optional fields: null or blank clears them. contactPhone is independent
+   * of the login phone. latitude and longitude are given together or not at all.
+   */
+  public record StoreRequest(
       @NotBlank @Size(max = 200) String name,
       @NotNull UUID categoryId,
-      @Size(max = 64) String contactPhone) {}
-
-  public record NewEstablishmentRequest(
-      @NotBlank @Size(max = 200) String name,
-      @NotNull UUID categoryId,
+      @NotNull UUID cityId,
+      @NotNull UUID addressId,
+      @Size(max = 500) String addressDetails,
       @Size(max = 64) String contactPhone,
-      @NotBlank @Size(max = 200) String branchName,
-      @NotNull UUID cityId,
-      @NotNull UUID addressId,
-      @Size(max = 500) String addressDetails) {}
+      @DecimalMin("-90") @DecimalMax("90") @Digits(integer = 2, fraction = 6) BigDecimal latitude,
+      @DecimalMin("-180") @DecimalMax("180") @Digits(integer = 3, fraction = 6) BigDecimal longitude,
+      @Size(max = 1000) String description) {
+    public StoreData data() {
+      return new StoreData(
+          name, categoryId, cityId, addressId, addressDetails, contactPhone, latitude, longitude,
+          description);
+    }
+  }
 
-  public record EstablishmentCreatedResponse(UUID establishmentId, UUID branchId, String status) {}
+  public record StoreCreatedResponse(UUID storeId, String status) {}
 
-  public record BranchRequest(
-      @NotBlank @Size(max = 200) String name,
-      @NotNull UUID cityId,
-      @NotNull UUID addressId,
-      @Size(max = 500) String addressDetails) {}
+  /** One weekday; times are "HH:mm" and omitted when closed. Close before open = after midnight. */
+  public record DayHours(
+      @NotNull @Min(1) @Max(7) Integer weekday,
+      boolean closed,
+      @Pattern(regexp = "([01][0-9]|2[0-3]):[0-5][0-9]") String opensAt,
+      @Pattern(regexp = "([01][0-9]|2[0-3]):[0-5][0-9]") String closesAt) {}
 
-  public record BranchCreatedResponse(UUID branchId, String status) {}
+  /** The whole week, exactly seven days, replaces the previous hours. */
+  public record StoreHoursRequest(@NotNull @Size(min = 7, max = 7) List<@NotNull @Valid DayHours> days) {}
 
   public record StatusRequest(@NotNull @Pattern(regexp = "ACTIVE|SUSPENDED") String status) {}
 
@@ -132,7 +141,7 @@ public final class PartnerDtos {
       String name,
       String phone,
       String status,
-      Set<UUID> branchIds,
+      Set<UUID> storeIds,
       Set<String> permissions) {}
 
   public record EmployeePinRequest(@NotNull @Pattern(regexp = "[0-9]{6}") String pin) {
@@ -142,5 +151,5 @@ public final class PartnerDtos {
     }
   }
 
-  public record EmployeeBranchesRequest(@NotEmpty @Size(max = 200) Set<@NotNull UUID> branchIds) {}
+  public record EmployeeStoresRequest(@NotEmpty @Size(max = 200) Set<@NotNull UUID> storeIds) {}
 }

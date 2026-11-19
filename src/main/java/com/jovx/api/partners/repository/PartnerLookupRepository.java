@@ -13,10 +13,10 @@ import org.springframework.stereotype.Repository;
 @Repository
 @Profile("local-postgres")
 public final class PartnerLookupRepository {
-  // Every partner is registered with at least one establishment; its name is their names joined.
+  // Every partner is registered with at least one store; its name is the store names joined.
   private static final String SELECT =
-      "SELECT p.id,p.status,COALESCE((SELECT string_agg(e.name,'، ' ORDER BY e.name)"
-          + " FROM partner_establishments e WHERE e.partner_id=p.id),'')"
+      "SELECT p.id,p.status,COALESCE((SELECT string_agg(s.name,'، ' ORDER BY s.name)"
+          + " FROM partner_stores s WHERE s.partner_id=p.id),'')"
           + " FROM partner_owners p ";
   private final JdbcTemplate jdbc;
 

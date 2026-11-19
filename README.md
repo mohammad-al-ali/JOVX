@@ -9,7 +9,7 @@
 - `src/main/java/com/jovx/api/security`: المستخدمون وPIN والدخول والجلسات والأدوار والصلاحيات.
 - `src/main/java/com/jovx/api/partners`: الشركاء والمنشآت والفروع وموظفو الشركاء وقوائم التسجيل، بتنظيم controller/service/repository/model/dto/config.
 - `src/main/java/com/jovx/api/releases`: إصدارات التطبيقات وسياسة التحديث من داخل التطبيق.
-- `src/main/resources/db/postgresql`: ترحيلات Flyway V1 إلى V4؛ لا تُعدّل ترحيلًا سبق تطبيقه. V3 تضيف صلاحية الإدارة `partner.branch.manage`.
+- `src/main/resources/db/postgresql`: ترحيلات Flyway V1 إلى V8؛ لا تُعدّل ترحيلًا سبق تطبيقه. V8 تستبدل المنشآت والفروع بالمتاجر، وتعيد تسمية صلاحية الإدارة إلى `partner.store.manage`.
 - `src/test`: اختبارات السلوك والتكامل وحدود الوحدات.
 
 [شرح البنية وتدفق إنشاء الشريك](docs/backend-structure-ar.md).
@@ -71,18 +71,17 @@ JOVX_MIGRATION_PASSWORD
 
 | العملية | المسار | من يملكها |
 |---|---|---|
-| قائمة الشركاء (صفحات: `limit` افتراضيًا 20 وحدها الأقصى 100، و`offset`، والبحث `q` بالاسم أو الهاتف أو اسم المنشأة) وتفاصيل شريك | `GET /api/v1/admin/partners`، `GET /api/v1/admin/partners/{id}` | Super Admin أو Admin بـ`partner.create` أو `partner.branch.manage` |
+| قائمة الشركاء (صفحات: `limit` افتراضيًا 20 وحدها الأقصى 100، و`offset`، والبحث `q` بالاسم أو الهاتف أو اسم المتجر) وتفاصيل شريك | `GET /api/v1/admin/partners`، `GET /api/v1/admin/partners/{id}` | Super Admin أو Admin بـ`partner.create` أو `partner.branch.manage` |
 | الحد الأدنى للخصم | `PUT /api/v1/admin/partners/{id}/discount` | Super Admin أو `partner.create` فقط |
-| إضافة/تعديل منشأة (إدارة) | `POST .../{id}/establishments`، `PUT .../{id}/establishments/{eid}` | Super Admin أو `partner.create` |
-| إضافة/تعديل/إيقاف فرع (إدارة) | `POST .../{id}/establishments/{eid}/branches`، `PUT .../{id}/branches/{bid}`، `PUT .../{id}/branches/{bid}/status` | Super Admin أو `partner.branch.manage` |
-| ملف الشريك ومنشآته وفروعه | `GET /api/v1/partner/profile`، `POST /api/v1/partner/establishments`، `PUT /api/v1/partner/establishments/{eid}`، `POST /api/v1/partner/establishments/{eid}/branches`، `PUT /api/v1/partner/branches/{bid}`، `PUT /api/v1/partner/branches/{bid}/status` | الشريك المالك |
-| الموظفون | `GET /api/v1/partner/employees`، `PUT .../employees/{id}/status`، `PUT .../employees/{id}/pin`، `PUT .../employees/{id}/branches` | الشريك المالك (`employee.suspend`/`reactivate`/`pin.change`/`create`) |
+| متاجر الشريك (إدارة): إضافة، تعديل، إيقاف/إعادة تفعيل، مواعيد العمل | `POST .../{id}/stores`، `PUT .../{id}/stores/{sid}`، `PUT .../{id}/stores/{sid}/status`، `PUT .../{id}/stores/{sid}/hours` | Super Admin أو `partner.store.manage` |
+| ملف الشريك ومتاجره | `GET /api/v1/partner/profile`، `POST /api/v1/partner/stores`، `PUT /api/v1/partner/stores/{sid}`، `PUT /api/v1/partner/stores/{sid}/status`، `PUT /api/v1/partner/stores/{sid}/hours` | الشريك المالك |
+| الموظفون | `GET /api/v1/partner/employees`، `PUT .../employees/{id}/status`، `PUT .../employees/{id}/pin`، `PUT .../employees/{id}/stores` | الشريك المالك (`employee.suspend`/`reactivate`/`pin.change`/`create`) |
 | تغيير PIN الشريك | `PUT /api/v1/account/pin` (`currentPin`, `newPin`) | الشريك فقط؛ ينهي كل جلساته |
 | الموقع الافتراضي (قراءة) | `GET /api/v1/public/location-defaults` (204 إن لم يُحدد)، ويُضاف أيضًا كحقل `defaults` إلى `GET /api/v1/reference-data` | عام |
 | تغيير الموقع الافتراضي | `PUT /api/v1/admin/reference-defaults` (`cityId`, `addressId`؛ الحي يجب أن يتبع المدينة) | Super Admin أو `partner.create` |
-| دليل الشركاء العام حسب المدينة | `GET /api/v1/public/partners?cityId=` (اختياري؛ منشآت لها فرع نشط في المدينة) | عام |
+| دليل المتاجر العام حسب المدينة | `GET /api/v1/public/partners?cityId=` (اختياري؛ المتاجر النشطة لشركاء نشطين في المدينة، مع الموقع والمواعيد) | عام |
 
-يُسمح بإيقاف أي فرع؛ الموظف المكلف بفروع موقوفة فقط لا يستطيع الدخول. إيقاف الموظف أو تغيير PIN له ينهي جلساته، وإعادة التفعيل تتطلب دخولًا جديدًا. منشأة تضاف لشريك معلق تبقى معلقة وتُفعّل معه. هاتف التواصل مستقل عن هاتف الدخول. إعادة ضبط PIN الشريك من الإدارة مؤجلة.
+يُسمح بإيقاف أي متجر؛ الموظف المكلف بمتاجر موقوفة فقط لا يستطيع الدخول، والشريك النشط يدخل ولو أُوقفت كل متاجره. المواعيد بتوقيت دمشق، والإغلاق قبل الفتح يعني بعد منتصف الليل. إيقاف الموظف أو تغيير PIN له ينهي جلساته، وإعادة التفعيل تتطلب دخولًا جديدًا. متجر يضاف لشريك معلق يبقى معلقًا ويُفعّل معه. هاتف التواصل مستقل عن هاتف الدخول. إعادة ضبط PIN الشريك من الإدارة مؤجلة.
 
 ## إصدارات التطبيقات والتحديث من داخل التطبيق
 

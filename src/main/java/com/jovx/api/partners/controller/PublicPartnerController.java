@@ -1,6 +1,6 @@
 package com.jovx.api.partners.controller;
 
-import com.jovx.api.partners.model.PartnerModels.PublicEstablishment;
+import com.jovx.api.partners.model.PartnerModels.PublicStore;
 import com.jovx.api.partners.service.PartnerDirectoryService;
 import java.util.List;
 import org.springframework.context.annotation.Profile;
@@ -16,9 +16,9 @@ public class PublicPartnerController {
     this.directory = directory;
   }
 
-  /** Optional cityId: only establishments with an active branch in that city (default-city filter). */
+  /** Optional cityId: only stores located in that city (default-city filter). */
   @GetMapping("/api/v1/public/partners")
-  public List<PublicEstablishment> partners(
+  public List<PublicStore> partners(
       @RequestParam(required = false) java.util.UUID cityId) {
     return directory.publicDirectory(cityId);
   }
