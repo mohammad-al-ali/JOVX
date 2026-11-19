@@ -4,6 +4,7 @@ import com.jovx.api.security.api.*;
 import com.jovx.api.partners.dto.PartnerDtos.*;
 import com.jovx.api.partners.model.PartnerModels.*;
 import com.jovx.api.partners.repository.PartnerRepository;
+import com.jovx.api.partners.repository.ReferenceDefaultsRepository;
 import java.time.Clock;
 import java.util.*;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -17,6 +18,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 @Profile("local-postgres")
 public class PartnerService {
   private final PartnerRepository repository;
+  private final ReferenceDefaultsRepository defaults;
   private final TransactionTemplate tx;
   private final PartnerAccountProvisioning accounts;
   private final AdministrationAccess access;
@@ -24,11 +26,13 @@ public class PartnerService {
 
   public PartnerService(
       PartnerRepository repository,
+      ReferenceDefaultsRepository defaults,
       @Qualifier("partnerTransactions") TransactionTemplate tx,
       PartnerAccountProvisioning accounts,
       AdministrationAccess access,
       Clock clock) {
     this.repository = repository;
+    this.defaults = defaults;
     this.tx = tx;
     this.accounts = accounts;
     this.access = access;
@@ -99,7 +103,10 @@ public class PartnerService {
 
   public ReferenceDataResponse referenceData() {
     return new ReferenceDataResponse(
-        repository.cities(), repository.addresses(), repository.categories());
+        repository.cities(),
+        repository.addresses(),
+        repository.categories(),
+        defaults.current().map(LocationDefaultsView::of).orElse(null));
   }
 
   public Reference city(UUID actor, UUID session, String name) {

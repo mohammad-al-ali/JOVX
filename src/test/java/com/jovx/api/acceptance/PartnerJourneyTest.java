@@ -1152,4 +1152,58 @@ class PartnerJourneyTest {
         assertEquals("PARTNER_NOT_ACTIVE",call("POST","/api/v1/admin/wallets/requests/"+pending+"/approve",null,root).text("code"));
         jdbc.update("UPDATE partner_owners SET status='ACTIVE' WHERE id=?",partnerId);
     }
+
+    // ---- Default city/neighborhood (user decision 2026-11-19) ----
+    Response putDefaults(String access,Object city,Object address) throws Exception {
+        var body=new LinkedHashMap<String,Object>();body.put("cityId",city);body.put("addressId",address);
+        return call("PUT","/api/v1/admin/reference-defaults",body,access);
+    }
+    @Test void defaultLocationIsSetByAdministrationAndOfferedToFormsAndGuests() throws Exception {
+        jdbc.update("DELETE FROM reference_defaults");
+        String root=superAccess();var admin=login(account(AccountRole.ADMIN));var owner=partner();
+        assertEquals(204,call("GET","/api/v1/public/location-defaults",null,null).status());
+        assertTrue(call("GET","/api/v1/reference-data",null,root).json().path("defaults").isNull());
+        assertEquals(401,putDefaults(null,CITY,ADDRESS).status());
+        assertEquals(403,putDefaults(admin.access(),CITY,ADDRESS).status());
+        assertEquals(403,putDefaults(owner.access(),CITY,ADDRESS).status());
+        var set=putDefaults(root,CITY,ADDRESS);
+        assertEquals(200,set.status());assertEquals(CITY.toString(),set.text("cityId"));assertEquals("حي اختبار",set.text("addressName"));
+        var guest=call("GET","/api/v1/public/location-defaults",null,null);
+        assertEquals(200,guest.status());assertEquals(ADDRESS.toString(),guest.text("addressId"));assertEquals("مدينة اختبار",guest.text("cityName"));
+        assertFalse(guest.json().toString().contains("updated"));
+        var forms=call("GET","/api/v1/reference-data",null,owner.access()).json().path("defaults");
+        assertEquals(CITY.toString(),forms.path("cityId").asString());assertEquals(ADDRESS.toString(),forms.path("addressId").asString());
+        assertEquals(204,roleGrants(root,"ADMIN",Set.of("partner.create")).status());
+        String other=UUID.randomUUID().toString();
+        jdbc.update("INSERT INTO addresses(id,city_id,name) VALUES (?,?,?)",other,OTHER_CITY.toString(),"حي آخر "+other);
+        var changed=putDefaults(admin.access(),OTHER_CITY,other);
+        assertEquals(200,changed.status());assertEquals(OTHER_CITY.toString(),changed.text("cityId"));
+        assertEquals(other,call("GET","/api/v1/public/location-defaults",null,null).text("addressId"));
+    }
+    @Test void defaultNeighborhoodMustBelongToTheDefaultCity() throws Exception {
+        String root=superAccess();
+        assertEquals(204,roleGrants(root,"ADMIN",Set.of()).status());
+        var before=jdbc.queryForList("SELECT city_id,address_id FROM reference_defaults");
+        var mismatch=putDefaults(root,OTHER_CITY,ADDRESS);
+        assertEquals(400,mismatch.status());assertEquals("INVALID_LOCATION_OR_CATEGORY",mismatch.text("code"));
+        assertEquals(400,putDefaults(root,UUID.randomUUID(),UUID.randomUUID()).status());
+        assertEquals(400,putDefaults(root,CITY,null).status());
+        assertEquals(before,jdbc.queryForList("SELECT city_id,address_id FROM reference_defaults"));
+    }
+    @Test void publicDirectoryFiltersByCityWithAnActiveBranch() throws Exception {
+        String root=superAccess();var here=partner();var there=partner();
+        String other=UUID.randomUUID().toString();
+        jdbc.update("INSERT INTO addresses(id,city_id,name) VALUES (?,?,?)",other,OTHER_CITY.toString(),"حي بعيد "+other);
+        var body=establishmentBody("منشأة المدينة الثانية");body.put("cityId",OTHER_CITY);body.put("addressId",other);
+        var far=call("POST",partnerPath(there)+"/establishments",body,root);assertEquals(201,far.status());
+        String hereEst=here.created().text("establishmentId"),farEst=far.text("establishmentId");
+        var inCity=call("GET","/api/v1/public/partners?cityId="+CITY,null,null).json().toString();
+        assertTrue(inCity.contains(hereEst));assertFalse(inCity.contains(farEst));
+        var inOther=call("GET","/api/v1/public/partners?cityId="+OTHER_CITY,null,null).json().toString();
+        assertTrue(inOther.contains(farEst));assertFalse(inOther.contains(hereEst));
+        var all=call("GET","/api/v1/public/partners",null,null).json().toString();
+        assertTrue(all.contains(hereEst));assertTrue(all.contains(farEst));
+        assertEquals(204,call("PUT",partnerPath(there)+"/branches/"+far.text("branchId")+"/status",Map.of("status","SUSPENDED"),root).status());
+        assertFalse(call("GET","/api/v1/public/partners?cityId="+OTHER_CITY,null,null).json().toString().contains(farEst));
+    }
 }

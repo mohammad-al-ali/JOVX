@@ -57,8 +57,21 @@ public final class PartnerDtos {
   public record PartnerCreatedResponse(
       UUID partnerId, UUID accountId, UUID establishmentId, UUID branchId, String status) {}
 
+  /** defaults is null until administration chooses a default city and neighborhood. */
   public record ReferenceDataResponse(
-      List<Reference> cities, List<Address> addresses, List<Reference> categories) {}
+      List<Reference> cities,
+      List<Address> addresses,
+      List<Reference> categories,
+      LocationDefaultsView defaults) {}
+
+  public record LocationDefaultsRequest(@NotNull UUID cityId, @NotNull UUID addressId) {}
+
+  public record LocationDefaultsView(
+      UUID cityId, String cityName, UUID addressId, String addressName) {
+    public static LocationDefaultsView of(LocationDefaults d) {
+      return new LocationDefaultsView(d.cityId(), d.cityName(), d.addressId(), d.addressName());
+    }
+  }
 
   public record ReferenceRequest(@NotBlank @Size(max = 200) String name) {}
 

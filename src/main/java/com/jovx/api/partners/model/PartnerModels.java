@@ -26,6 +26,9 @@ public final class PartnerModels {
 
   public record Address(UUID id, UUID cityId, String name) {}
 
+  /** Default city and neighborhood preselected in forms and the public directory filter. */
+  public record LocationDefaults(UUID cityId, String cityName, UUID addressId, String addressName) {}
+
   public record BranchDetail(
       UUID id,
       String name,

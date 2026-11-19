@@ -16,7 +16,7 @@ public class PartnerDirectoryService {
   }
 
   /** Discount shown is the partner-wide minimum; the public contact phone is optional. */
-  public List<PublicEstablishment> publicDirectory() {
-    return repository.publicDirectory();
+  public List<PublicEstablishment> publicDirectory(java.util.UUID city) {
+    return repository.publicDirectory(city);
   }
 }

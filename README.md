@@ -78,6 +78,9 @@ JOVX_MIGRATION_PASSWORD
 | ملف الشريك ومنشآته وفروعه | `GET /api/v1/partner/profile`، `POST /api/v1/partner/establishments`، `PUT /api/v1/partner/establishments/{eid}`، `POST /api/v1/partner/establishments/{eid}/branches`، `PUT /api/v1/partner/branches/{bid}`، `PUT /api/v1/partner/branches/{bid}/status` | الشريك المالك |
 | الموظفون | `GET /api/v1/partner/employees`، `PUT .../employees/{id}/status`، `PUT .../employees/{id}/pin`، `PUT .../employees/{id}/branches` | الشريك المالك (`employee.suspend`/`reactivate`/`pin.change`/`create`) |
 | تغيير PIN الشريك | `PUT /api/v1/account/pin` (`currentPin`, `newPin`) | الشريك فقط؛ ينهي كل جلساته |
+| الموقع الافتراضي (قراءة) | `GET /api/v1/public/location-defaults` (204 إن لم يُحدد)، ويُضاف أيضًا كحقل `defaults` إلى `GET /api/v1/reference-data` | عام |
+| تغيير الموقع الافتراضي | `PUT /api/v1/admin/reference-defaults` (`cityId`, `addressId`؛ الحي يجب أن يتبع المدينة) | Super Admin أو `partner.create` |
+| دليل الشركاء العام حسب المدينة | `GET /api/v1/public/partners?cityId=` (اختياري؛ منشآت لها فرع نشط في المدينة) | عام |
 
 يُسمح بإيقاف أي فرع؛ الموظف المكلف بفروع موقوفة فقط لا يستطيع الدخول. إيقاف الموظف أو تغيير PIN له ينهي جلساته، وإعادة التفعيل تتطلب دخولًا جديدًا. منشأة تضاف لشريك معلق تبقى معلقة وتُفعّل معه. هاتف التواصل مستقل عن هاتف الدخول. إعادة ضبط PIN الشريك من الإدارة مؤجلة.
 

@@ -25,7 +25,7 @@ class ModularArchitectureTest {
         "AuthController#login", "AuthController#refresh", "AuthController#logout",
         "SessionController#session",
         "MemberController#claim", "MemberController#publicPlans",
-        "PublicPartnerController#partners",
+        "PublicPartnerController#partners", "ReferenceDefaultsController#publicDefaults",
         "ReleaseController#check");
 
     @Test void everyModuleKeepsSqlInRepositoriesAndTransportOutOfModels() {

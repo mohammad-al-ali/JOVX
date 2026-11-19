@@ -16,8 +16,10 @@ public class PublicPartnerController {
     this.directory = directory;
   }
 
+  /** Optional cityId: only establishments with an active branch in that city (default-city filter). */
   @GetMapping("/api/v1/public/partners")
-  public List<PublicEstablishment> partners() {
-    return directory.publicDirectory();
+  public List<PublicEstablishment> partners(
+      @RequestParam(required = false) java.util.UUID cityId) {
+    return directory.publicDirectory(cityId);
   }
 }
