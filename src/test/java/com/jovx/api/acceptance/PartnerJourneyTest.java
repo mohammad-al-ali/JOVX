@@ -1055,4 +1055,101 @@ class PartnerJourneyTest {
         assertEquals(403,call("GET","/api/v1/admin/partners",null,login(account(AccountRole.ADMIN)).access()).status());
         assertEquals(401,call("GET","/not-api",null,null).status());
     }
+
+    // ---- partner wallet (plan decisions 18-23, 36, 58-61) ----
+    Response walletPost(String path,String access,long amount,UUID request,String method) throws Exception {
+        return call("POST",path,Map.of("requestId",request,"amount",amount,"method",method,"reference","REF-1"),access);
+    }
+    long walletBalance(String partnerId){
+        var rows=jdbc.queryForList("SELECT balance FROM partner_wallets WHERE partner_id=?",Long.class,partnerId);
+        return rows.isEmpty()?0:rows.getFirst();
+    }
+    @Test void topupRequestIsApprovedOnceWithinLimitsAndCreditsTheWallet() throws Exception {
+        String root=superAccess();var owner=partner();String partnerId=owner.created().text("partnerId");
+        assertEquals(200,call("PUT","/api/v1/admin/wallets/settings",Map.of("minTopup",1000,"maxTopup",100000,"lowBalanceThreshold",200),root).status());
+        var low=walletPost("/api/v1/partner/wallet/topups",owner.access(),500,UUID.randomUUID(),"CASH");
+        assertEquals(400,low.status());assertEquals("TOPUP_OUT_OF_LIMITS",low.text("code"));
+        UUID request=UUID.randomUUID();
+        var created=walletPost("/api/v1/partner/wallet/topups",owner.access(),50000,request,"SHAM_CASH");
+        assertEquals(201,created.status(),created.json().toString());assertEquals("PENDING",created.text("status"));
+        assertEquals(created.text("id"),walletPost("/api/v1/partner/wallet/topups",owner.access(),50000,request,"SHAM_CASH").text("id"),"retry returns the first request");
+        assertEquals(0,walletBalance(partnerId),"nothing is credited before approval");
+        var wallet=call("GET","/api/v1/partner/wallet",null,owner.access());
+        assertTrue(wallet.json().path("low").asBoolean());assertTrue(wallet.json().path("canRequestRefund").asBoolean());
+        String id=created.text("id");
+        assertEquals("APPROVED",call("POST","/api/v1/admin/wallets/requests/"+id+"/approve",null,root).text("status"));
+        var again=call("POST","/api/v1/admin/wallets/requests/"+id+"/approve",null,root);
+        assertEquals(409,again.status());assertEquals("WALLET_REQUEST_DECIDED",again.text("code"));
+        assertEquals(50000,walletBalance(partnerId));
+        assertEquals(1,jdbc.queryForObject("SELECT COUNT(*) FROM wallet_ledger WHERE partner_id=? AND kind='TOPUP_APPROVED' AND delta=50000",Integer.class,partnerId));
+        assertFalse(call("GET","/api/v1/partner/wallet",null,owner.access()).json().path("low").asBoolean());
+    }
+    @Test void refundHoldsPointsAtOnceAndRejectionReleasesThem() throws Exception {
+        String root=superAccess();var owner=partner();String partnerId=owner.created().text("partnerId");
+        assertEquals(201,walletPost("/api/v1/admin/wallets/"+partnerId+"/topups",root,10000,UUID.randomUUID(),"CASH").status());
+        assertEquals(10000,walletBalance(partnerId));
+        var tooMuch=walletPost("/api/v1/partner/wallet/refunds",owner.access(),10001,UUID.randomUUID(),"TRANSFER");
+        assertEquals(409,tooMuch.status());assertEquals("INSUFFICIENT_BALANCE",tooMuch.text("code"));
+        var refund=walletPost("/api/v1/partner/wallet/refunds",owner.access(),4000,UUID.randomUUID(),"TRANSFER");
+        assertEquals(201,refund.status());
+        assertEquals(6000,walletBalance(partnerId));
+        assertEquals(4000,jdbc.queryForObject("SELECT held FROM partner_wallets WHERE partner_id=?",Long.class,partnerId));
+        var noReason=call("POST","/api/v1/admin/wallets/requests/"+refund.text("id")+"/reject",Map.of("reason"," "),root);
+        assertEquals(400,noReason.status());
+        assertEquals("REJECTED",call("POST","/api/v1/admin/wallets/requests/"+refund.text("id")+"/reject",Map.of("reason","حساب غير صحيح"),root).text("status"));
+        assertEquals(10000,walletBalance(partnerId),"rejection returns the held points");
+        assertEquals(0,jdbc.queryForObject("SELECT held FROM partner_wallets WHERE partner_id=?",Long.class,partnerId));
+
+        var second=walletPost("/api/v1/partner/wallet/refunds",owner.access(),3000,UUID.randomUUID(),"CASH");
+        var noPayout=call("POST","/api/v1/admin/wallets/requests/"+second.text("id")+"/approve",null,root);
+        assertEquals(400,noPayout.status());assertEquals("PAYOUT_METHOD_REQUIRED",noPayout.text("code"));
+        var paid=call("POST","/api/v1/admin/wallets/requests/"+second.text("id")+"/approve",Map.of("payoutMethod","CASH","payoutReference","سند 4"),root);
+        assertEquals("APPROVED",paid.text("status"));assertEquals("CASH",paid.text("payoutMethod"));
+        assertEquals(7000,walletBalance(partnerId));
+        assertEquals(0,jdbc.queryForObject("SELECT held FROM partner_wallets WHERE partner_id=?",Long.class,partnerId),"paid out: held points leave the wallet");
+    }
+    @Test void concurrentRefundsNeverOverdrawTheWallet() throws Exception {
+        String root=superAccess();var owner=partner();String partnerId=owner.created().text("partnerId");
+        walletPost("/api/v1/admin/wallets/"+partnerId+"/topups",root,5000,UUID.randomUUID(),"CASH");
+        var pool=Executors.newFixedThreadPool(4);
+        try {
+            var tasks=new ArrayList<Callable<Integer>>();
+            for(int i=0;i<4;i++)tasks.add(()->walletPost("/api/v1/partner/wallet/refunds",owner.access(),2000,UUID.randomUUID(),"CASH").status());
+            var codes=new ArrayList<Integer>();for(var f:pool.invokeAll(tasks))codes.add(f.get());
+            assertEquals(2,codes.stream().filter(c->c==201).count(),codes.toString());
+            assertEquals(2,codes.stream().filter(c->c==409).count(),codes.toString());
+        } finally {pool.shutdownNow();}
+        assertEquals(1000,walletBalance(partnerId));
+        assertEquals(4000,jdbc.queryForObject("SELECT held FROM partner_wallets WHERE partner_id=?",Long.class,partnerId));
+    }
+    @Test void walletAccessFollowsOwnershipGrantsAndPartnerStatus() throws Exception {
+        String root=superAccess();var owner=partner();var other=partner();String partnerId=owner.created().text("partnerId");
+        var admin=login(account(AccountRole.ADMIN));
+        assertEquals(403,call("GET","/api/v1/admin/wallets",null,admin.access()).status());
+        assertEquals(403,call("GET","/api/v1/admin/wallets",null,owner.access()).status());
+        assertEquals(401,call("GET","/api/v1/partner/wallet",null,null).status());
+        assertEquals(204,roleGrants(root,"ADMIN",Set.of("wallet.manage")).status());
+        assertEquals(200,call("GET","/api/v1/admin/wallets",null,admin.access()).status());
+
+        String viewer=nextPhone(),payer=nextPhone();
+        assertEquals(201,employee(owner,viewer,Set.of("wallet.read")).status());
+        assertEquals(201,employee(owner,payer,Set.of("wallet.read","wallet.topup.request")).status());
+        var v=login(viewer,"012345");var p=login(payer,"012345");
+        var seen=call("GET","/api/v1/partner/wallet",null,v.access());
+        assertEquals(200,seen.status());assertEquals(partnerId,seen.text("partnerId"));
+        assertFalse(seen.json().path("canRequestTopup").asBoolean());assertFalse(seen.json().path("canRequestRefund").asBoolean());
+        assertEquals(403,walletPost("/api/v1/partner/wallet/topups",v.access(),5000,UUID.randomUUID(),"CASH").status());
+        assertEquals(201,walletPost("/api/v1/partner/wallet/topups",p.access(),5000,UUID.randomUUID(),"CASH").status());
+        assertEquals(403,walletPost("/api/v1/partner/wallet/refunds",p.access(),1,UUID.randomUUID(),"CASH").status(),"refunds are owner-only");
+        assertEquals(other.created().text("partnerId"),call("GET","/api/v1/partner/wallet",null,other.access()).text("partnerId"));
+
+        jdbc.update("UPDATE partner_owners SET status='SUSPENDED' WHERE id=?",partnerId);
+        var frozen=call("GET","/api/v1/admin/wallets/"+partnerId,null,root);
+        assertTrue(frozen.json().path("frozen").asBoolean());
+        var direct=walletPost("/api/v1/admin/wallets/"+partnerId+"/topups",root,5000,UUID.randomUUID(),"CASH");
+        assertEquals(409,direct.status());assertEquals("PARTNER_NOT_ACTIVE",direct.text("code"));
+        String pending=jdbc.queryForObject("SELECT id FROM wallet_requests WHERE partner_id=? AND status='PENDING'",String.class,partnerId).strip();
+        assertEquals("PARTNER_NOT_ACTIVE",call("POST","/api/v1/admin/wallets/requests/"+pending+"/approve",null,root).text("code"));
+        jdbc.update("UPDATE partner_owners SET status='ACTIVE' WHERE id=?",partnerId);
+    }
 }
