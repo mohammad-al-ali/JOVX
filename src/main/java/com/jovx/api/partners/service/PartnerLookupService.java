@@ -31,4 +31,16 @@ public class PartnerLookupService implements PartnerLookup {
   public List<PartnerRef> all() {
     return repository.all();
   }
+
+  public Optional<StoreRef> store(UUID store) {
+    return repository.store(store);
+  }
+
+  public List<StoreRef> stores(UUID partner) {
+    return repository.stores(partner);
+  }
+
+  public Set<UUID> employeeStores(UUID employee) {
+    return repository.employeeStores(employee);
+  }
 }

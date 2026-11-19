@@ -1,0 +1,75 @@
+package com.jovx.api.catalog.model;
+
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.time.Instant;
+import java.util.UUID;
+
+public final class CatalogModels {
+  private CatalogModels() {}
+
+  public static final int MAX_IMAGES = 4;
+  public static final int MAX_STOCK = 1_000_000;
+  public static final long MAX_PRICE = 1_000_000_000_000L;
+
+  public enum ReviewStatus { PENDING, APPROVED, REJECTED, HIDDEN }
+
+  public record Category(UUID id, String name, int sortOrder, boolean active) {}
+
+  public record Product(
+      UUID id, UUID requestId, UUID storeId, UUID partnerId, UUID categoryId, String name, String description,
+      long priceAmount, String currency, Long memberPriceAmount, long points, boolean stockTracked, Integer stock,
+      ReviewStatus reviewStatus, String reviewReason, boolean published, int version, Instant createdAt,
+      Instant updatedAt) {}
+
+  public record ProductImage(UUID id, UUID productId, int position, String objectKey, String contentType, int sizeBytes) {}
+
+  /** What a partner may set; stock and the show/hide switch have their own commands. */
+  public record ProductDraft(
+      UUID categoryId, String name, String description, long priceAmount, Long memberPriceAmount, long points,
+      boolean stockTracked, Integer stock) {}
+
+  /** Pure catalog rules. */
+  public static final class Rules {
+    private Rules() {}
+
+    /** Half-up rounding to a whole unit: 0.5 or more rounds up (decision 12). */
+    static long halfUp(BigDecimal value) {
+      return value.setScale(0, RoundingMode.HALF_UP).longValueExact();
+    }
+
+    /** Decisions 11, 14: at least 2% of the price before discount (10,000 → 200; 12,345 → 247). */
+    public static long minimumPoints(long priceAmount) {
+      return halfUp(BigDecimal.valueOf(priceAmount).multiply(new BigDecimal("0.02")));
+    }
+
+    /** Decision 65: automatic member price = price × (1 − minimum discount%) rounded half-up. */
+    public static long automaticMemberPrice(long priceAmount, BigDecimal minimumDiscountPercent) {
+      var factor = BigDecimal.valueOf(100).subtract(minimumDiscountPercent).divide(BigDecimal.valueOf(100));
+      return halfUp(BigDecimal.valueOf(priceAmount).multiply(factor));
+    }
+
+    /** A custom member price may only give a discount at least as large as the partner-wide minimum. */
+    public static boolean validCustomMemberPrice(long custom, long priceAmount, BigDecimal minimumDiscountPercent) {
+      return custom >= 0 && custom <= automaticMemberPrice(priceAmount, minimumDiscountPercent);
+    }
+
+    public static long effectiveMemberPrice(Product p, BigDecimal minimumDiscountPercent) {
+      return p.memberPriceAmount() != null ? p.memberPriceAmount() : automaticMemberPrice(p.priceAmount(), minimumDiscountPercent);
+    }
+
+    /** Decision 24: anything but stock and the show/hide switch sends the product back to review. */
+    public static boolean needsReview(Product before, ProductDraft after) {
+      return !before.categoryId().equals(after.categoryId()) || !before.name().equals(after.name())
+          || !java.util.Objects.equals(before.description(), after.description())
+          || before.priceAmount() != after.priceAmount()
+          || !java.util.Objects.equals(before.memberPriceAmount(), after.memberPriceAmount())
+          || before.points() != after.points() || before.stockTracked() != after.stockTracked();
+    }
+
+    /** Shown to members: approved, switched on by the partner, and the store and partner active. */
+    public static boolean visibleToMembers(Product p, boolean storeActive, boolean partnerActive) {
+      return p.reviewStatus() == ReviewStatus.APPROVED && p.published() && storeActive && partnerActive;
+    }
+  }
+}

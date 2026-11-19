@@ -43,6 +43,8 @@ class PartnerJourneyTest {
     static JdbcTemplate server;
     static boolean created;
     static Path publicKey,privateKey;
+    static final Path IMAGES=tempImages();
+    static Path tempImages(){try{var d=Files.createTempDirectory("jovx-images-");d.toFile().deleteOnExit();return d;}catch(Exception e){throw new IllegalStateException(e);}}
     static final UUID CITY=UUID.randomUUID(),OTHER_CITY=UUID.randomUUID(),ADDRESS=UUID.randomUUID(),CATEGORY=UUID.randomUUID();
     @LocalServerPort int port;
     @Autowired JdbcAccountStore accounts;
@@ -81,6 +83,7 @@ class PartnerJourneyTest {
         r.add("jovx.security.jwt.private-key",()->privateKey.toUri().toString());
         r.add("jovx.security.jwt.issuer",()->"https://identity.jovx.test");
         r.add("jovx.security.jwt.audience",()->"jovx-api");
+        r.add("jovx.storage.local-dir",()->IMAGES.toString());
     }
     static DataSource testDataSource(){setup();return source;}
     static Clock testClock(){return TIME;}
@@ -1242,5 +1245,122 @@ class PartnerJourneyTest {
         assertFalse(all.contains(here.created().text("partnerId")),"owner ids are not exposed");
         assertEquals(204,call("PUT",partnerPath(there)+"/stores/"+farStore+"/status",Map.of("status","SUSPENDED"),root).status());
         assertFalse(call("GET","/api/v1/public/partners?cityId="+OTHER_CITY,null,null).json().toString().contains(farStore));
+    }
+
+    // ---- store catalog (plan decisions 11, 12, 14, 24-28, 62-68) ----
+    Map<String,Object> productBody(long price,Long memberPrice,long points,boolean tracked,Integer stock){
+        var p=new LinkedHashMap<String,Object>();
+        p.put("categoryId","7f0b1c1e-0001-4a00-8000-000000000001");p.put("name","برغر");p.put("description","لحم مشوي");
+        p.put("priceAmount",price);p.put("memberPriceAmount",memberPrice);p.put("points",points);p.put("stockTracked",tracked);p.put("stock",stock);
+        return p;
+    }
+    Response createProduct(Partner owner,UUID request,Map<String,Object> product) throws Exception {
+        return call("POST","/api/v1/partner/stores/"+owner.created().text("storeId")+"/products",Map.of("requestId",request,"product",product),owner.access());
+    }
+    Response publicProducts(Partner owner) throws Exception {
+        return call("GET","/api/v1/public/stores/"+owner.created().text("storeId")+"/products",null,null);
+    }
+    Response upload(String access,String productId,byte[] bytes) throws Exception {
+        String boundary="jovx"+UUID.randomUUID();
+        var out=new java.io.ByteArrayOutputStream();
+        out.write(("--"+boundary+"\r\nContent-Disposition: form-data; name=\"file\"; filename=\"p.bin\"\r\nContent-Type: application/octet-stream\r\n\r\n").getBytes());
+        out.write(bytes);out.write(("\r\n--"+boundary+"--\r\n").getBytes());
+        var request=HttpRequest.newBuilder(URI.create("http://127.0.0.1:"+port+"/api/v1/partner/products/"+productId+"/images"))
+            .timeout(Duration.ofSeconds(20)).header("Authorization","Bearer "+access).header("Content-Type","multipart/form-data; boundary="+boundary)
+            .POST(HttpRequest.BodyPublishers.ofByteArray(out.toByteArray())).build();
+        var r=client.send(request,HttpResponse.BodyHandlers.ofString());
+        return new Response(r.statusCode(),r.body().isBlank()?JSON.nullNode():JSON.readTree(r.body()),r.headers());
+    }
+    static byte[] png(int w,int h) throws Exception {
+        var image=new java.awt.image.BufferedImage(w,h,java.awt.image.BufferedImage.TYPE_INT_ARGB);
+        var out=new java.io.ByteArrayOutputStream();javax.imageio.ImageIO.write(image,"png",out);return out.toByteArray();
+    }
+    @Test void productIsReviewedBeforeMembersSeeItAtTheMemberPrice() throws Exception {
+        String root=superAccess();var owner=partner();
+        var lowPoints=createProduct(owner,UUID.randomUUID(),productBody(10000,null,199,false,null));
+        assertEquals(400,lowPoints.status());assertEquals("POINTS_BELOW_MINIMUM",lowPoints.text("code"));
+        var weakDiscount=createProduct(owner,UUID.randomUUID(),productBody(10000,9500L,200,false,null));
+        assertEquals("MEMBER_PRICE_BELOW_MINIMUM_DISCOUNT",weakDiscount.text("code"),"10% minimum: 9,500 gives only 5%");
+        UUID request=UUID.randomUUID();
+        var created=createProduct(owner,request,productBody(10000,null,200,true,5));
+        assertEquals(201,created.status(),created.json().toString());
+        assertEquals("PENDING",created.text("reviewStatus"));assertEquals(9000,created.json().path("memberPriceAmount").asLong());
+        assertEquals(200,created.json().path("minimumPoints").asLong());
+        assertEquals(created.text("id"),createProduct(owner,request,productBody(10000,null,200,true,5)).text("id"),"retry returns the first product");
+        assertEquals(0,publicProducts(owner).json().size(),"pending products are hidden");
+        String id=created.text("id");
+        assertEquals("APPROVED",call("POST","/api/v1/admin/catalog/products/"+id+"/approve",null,root).text("reviewStatus"));
+        var shown=publicProducts(owner).json();
+        assertEquals(1,shown.size());assertEquals(9000,shown.get(0).path("memberPriceAmount").asLong());
+        assertFalse(shown.get(0).path("outOfStock").asBoolean());
+
+        var stocked=call("PUT","/api/v1/partner/products/"+id+"/stock",Map.of("stock",0),owner.access());
+        assertEquals("APPROVED",stocked.text("reviewStatus"),"stock alone keeps the approval");
+        assertTrue(publicProducts(owner).json().get(0).path("outOfStock").asBoolean());
+        var hidden=call("PUT","/api/v1/partner/products/"+id+"/published",Map.of("published",false),owner.access());
+        assertEquals("APPROVED",hidden.text("reviewStatus"));assertEquals(0,publicProducts(owner).json().size());
+        call("PUT","/api/v1/partner/products/"+id+"/published",Map.of("published",true),owner.access());
+
+        int version=call("GET","/api/v1/partner/stores/"+owner.created().text("storeId")+"/products",null,owner.access()).json().get(0).path("version").asInt();
+        var stale=call("PUT","/api/v1/partner/products/"+id,Map.of("expectedVersion",version-1,"product",productBody(12000,8000L,240,true,0)),owner.access());
+        assertEquals(409,stale.status());assertEquals("PRODUCT_CHANGED_RELOAD",stale.text("code"));
+        var edited=call("PUT","/api/v1/partner/products/"+id,Map.of("expectedVersion",version,"product",productBody(12000,8000L,240,true,0)),owner.access());
+        assertEquals("PENDING",edited.text("reviewStatus"),"a price change returns to review");assertTrue(edited.json().path("customMemberPrice").asBoolean());
+        assertEquals(0,publicProducts(owner).json().size());
+        assertEquals(204,call("DELETE","/api/v1/partner/products/"+id,null,owner.access()).status());
+        assertEquals(0,call("GET","/api/v1/partner/stores/"+owner.created().text("storeId")+"/products",null,owner.access()).json().size());
+    }
+    @Test void imagesAreReencodedAtMostFourAndSendTheProductBackToReview() throws Exception {
+        String root=superAccess();var owner=partner();
+        String id=createProduct(owner,UUID.randomUUID(),productBody(5000,null,100,false,null)).text("id");
+        call("POST","/api/v1/admin/catalog/products/"+id+"/approve",null,root);
+        var notImage=upload(owner.access(),id,"hello, not an image".getBytes());
+        assertEquals(400,notImage.status());assertEquals("IMAGE_TYPE_NOT_ALLOWED",notImage.text("code"));
+        var first=upload(owner.access(),id,png(2400,600));
+        assertEquals(200,first.status(),first.json().toString());assertEquals("PENDING",first.text("reviewStatus"));
+        String url=first.json().path("images").get(0).path("url").asString();
+        assertTrue(url.startsWith("/api/v1/public/images/products/"+id+"/"));
+        var served=client.send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:"+port+url)).build(),HttpResponse.BodyHandlers.ofByteArray());
+        assertEquals(200,served.statusCode());
+        var image=javax.imageio.ImageIO.read(new java.io.ByteArrayInputStream(served.body()));
+        assertEquals(1200,image.getWidth(),"resized to 1200 px");assertEquals(300,image.getHeight());
+        assertEquals((byte)0xff,served.body()[0],"re-encoded as JPEG");
+        for(int i=0;i<3;i++)assertEquals(200,upload(owner.access(),id,png(50,50)).status());
+        var fifth=upload(owner.access(),id,png(50,50));
+        assertEquals(409,fifth.status());assertEquals("TOO_MANY_IMAGES",fifth.text("code"));
+        String cover=first.json().path("images").get(0).path("id").asString();
+        var removed=call("DELETE","/api/v1/partner/products/"+id+"/images/"+cover,null,owner.access());
+        assertEquals(3,removed.json().path("images").size());assertEquals(0,removed.json().path("images").get(0).path("position").asInt());
+        assertEquals(404,client.send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:"+port+url)).build(),HttpResponse.BodyHandlers.ofByteArray()).statusCode());
+        var other=partner();
+        assertEquals(404,upload(other.access(),id,png(50,50)).status(),"another partner cannot touch the product");
+    }
+    @Test void reviewNeedsTheGrantReasonsAndTheRightStateWhileEmployeesStayInTheirStores() throws Exception {
+        String root=superAccess();var owner=partner();var other=partner();
+        String id=createProduct(owner,UUID.randomUUID(),productBody(8000,null,160,false,null)).text("id");
+        var admin=login(account(AccountRole.ADMIN));
+        assertEquals(403,call("GET","/api/v1/admin/catalog/products?status=PENDING",null,admin.access()).status());
+        assertEquals(204,roleGrants(root,"ADMIN",Set.of("catalog.review")).status());
+        assertTrue(call("GET","/api/v1/admin/catalog/products?status=PENDING",null,admin.access()).json().toString().contains(id));
+        assertEquals(400,call("POST","/api/v1/admin/catalog/products/"+id+"/reject",Map.of("reason"," "),admin.access()).status());
+        var hideEarly=call("POST","/api/v1/admin/catalog/products/"+id+"/hide",Map.of("reason","مخالف"),admin.access());
+        assertEquals(409,hideEarly.status());assertEquals("PRODUCT_NOT_APPROVED",hideEarly.text("code"));
+        var rejected=call("POST","/api/v1/admin/catalog/products/"+id+"/reject",Map.of("reason","الصورة غير واضحة"),admin.access());
+        assertEquals("REJECTED",rejected.text("reviewStatus"));assertEquals("الصورة غير واضحة",rejected.text("reviewReason"));
+        assertEquals(409,call("POST","/api/v1/admin/catalog/products/"+id+"/approve",null,admin.access()).status());
+
+        String reader=nextPhone(),writer=nextPhone();
+        assertEquals(201,employee(owner,reader,Set.of("catalog.read")).status());
+        assertEquals(201,employee(owner,writer,Set.of("catalog.read","catalog.submit")).status());
+        var r=login(reader,"012345");var w=login(writer,"012345");
+        String store="/api/v1/partner/stores/"+owner.created().text("storeId")+"/products";
+        assertEquals(200,call("GET",store,null,r.access()).status());
+        assertEquals(403,call("POST",store,Map.of("requestId",UUID.randomUUID(),"product",productBody(1000,null,20,false,null)),r.access()).status());
+        assertEquals(201,call("POST",store,Map.of("requestId",UUID.randomUUID(),"product",productBody(1000,null,20,false,null)),w.access()).status());
+        var foreign=call("GET","/api/v1/partner/stores/"+other.created().text("storeId")+"/products",null,w.access());
+        assertEquals(404,foreign.status());assertEquals("STORE_NOT_FOUND",foreign.text("code"));
+        assertEquals(404,call("GET",store,null,other.access()).status());
+        var categories=call("GET","/api/v1/public/product-categories",null,null);
+        assertEquals(200,categories.status());assertEquals(21,categories.json().size());
     }
 }
