@@ -20,6 +20,8 @@ import org.springframework.transaction.support.TransactionTemplate;
 @Profile("local-postgres")
 public class MembershipAdminService {
   static final String PERMISSION = "member.manage";
+  /** Batch label of cards recorded at the moment of sale, without prior stock registration. */
+  static final String DIRECT_SALE_BATCH = "بيع مباشر";
   private final MembershipRepository repository;
   private final AdministrationAccess access;
   private final MemberAccounts accounts;
@@ -119,12 +121,15 @@ public class MembershipAdminService {
         return replayed(p, PaymentKind.SALE);
       }
       Plan plan = activePlan(r.planId());
-      Card card = repository.cardByCodeForUpdate(code).orElseThrow(() -> fail(Kind.NOT_FOUND, "CARD_NOT_FOUND"));
+      Instant now = clock.instant();
+      // Decision 69: a card not registered in stock is recorded at the moment of sale.
+      // ON CONFLICT DO NOTHING + the row lock below keep concurrent sales of one card safe.
+      repository.insertCard(code, DIRECT_SALE_BATCH, actor, now);
+      Card card = repository.cardByCodeForUpdate(code).orElseThrow();
       if (card.status() != CardStatus.IN_STOCK) throw fail(Kind.CONFLICT, "CARD_NOT_AVAILABLE");
       final UUID member;
       try { member = accounts.createUnclaimed(r.name(), r.phone()); }
       catch (MemberAccounts.PhoneAlreadyRegistered ex) { throw fail(Kind.CONFLICT, "PHONE_ALREADY_REGISTERED"); }
-      Instant now = clock.instant();
       Instant expires = Terms.end(now, plan.durationMonths());
       String number = Terms.memberNumber(Long.parseLong(repository.nextMemberNumberValue()));
       repository.insertMember(new Member(member, number, plan.id(), now, expires), actor, now);

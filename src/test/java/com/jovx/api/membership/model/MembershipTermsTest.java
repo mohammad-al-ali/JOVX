@@ -38,6 +38,8 @@ class MembershipTermsTest {
     assertEquals("JVX-000042", Terms.memberNumber(42));
     assertEquals("JVX-1234567", Terms.memberNumber(1_234_567));
     assertEquals("JVXC-ABCD1234", Terms.cardCode("  JVXC-ABCD1234 "));
+    assertEquals("KpdvPmdCaP+QxJrw==", Terms.cardCode(" KpdvPmdCaP+QxJrw== "), "Base64 from the printed PDF417");
+    assertEquals("ab/cd+ef==", Terms.cardCode("ab/cd+ef=="));
     assertNull(Terms.cardCode("bad code"));
     assertNull(Terms.cardCode("abc"));
     assertNull(Terms.cardCode(null));

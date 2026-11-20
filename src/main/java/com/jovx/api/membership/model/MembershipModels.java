@@ -36,7 +36,8 @@ public final class MembershipModels {
 
   /** Pure membership-term rules. */
   public static final class Terms {
-    private static final Pattern CARD_CODE = Pattern.compile("[A-Za-z0-9._-]{4,64}");
+    /** Printed cards carry Base64 text in a PDF417 barcode, so '+', '/' and '=' are allowed (V10). */
+    private static final Pattern CARD_CODE = Pattern.compile("[A-Za-z0-9._+/=-]{4,128}");
 
     private Terms() {}
 

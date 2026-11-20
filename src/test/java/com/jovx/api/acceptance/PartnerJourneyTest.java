@@ -1363,4 +1363,26 @@ class PartnerJourneyTest {
         var categories=call("GET","/api/v1/public/product-categories",null,null);
         assertEquals(200,categories.status());assertEquals(21,categories.json().size());
     }
+
+    @Test void base64CardCodesFromThePrintedBarcodeAreStockedSoldAndClaimed() throws Exception {
+        String root=superAccess(),planId=plan(root,"بطاقة مطبوعة "+UUID.randomUUID(),6,true),phone=nextPhone();
+        String code=Base64.getEncoder().encodeToString(UUID.randomUUID().toString().getBytes()).substring(0,22)+"+/==";
+        var stocked=call("POST","/api/v1/admin/member-cards/batches",Map.of("batchLabel","PDF417","codes",List.of(code)),root);
+        assertEquals(1,stocked.json().path("added").asInt(),stocked.json().toString());
+        assertEquals(200,sell(root,UUID.randomUUID(),phone,code,planId).status());
+        assertEquals(204,claim(code,phone,"048291").status());
+        assertEquals(200,login(phone,"048291").status());
+    }
+
+    @Test void aCardNotInStockIsRecordedAtTheSaleButASoldCardStaysRefused() throws Exception {
+        String root=superAccess(),planId=plan(root,"بيع مباشر "+UUID.randomUUID(),6,true),phone=nextPhone();
+        String code="Kp"+UUID.randomUUID().toString().replace("-","").substring(0,14)+"+Q==";
+        var sold=sell(root,UUID.randomUUID(),phone,code,planId);
+        assertEquals(200,sold.status(),sold.json().toString());
+        assertEquals("ASSIGNED",jdbc.queryForObject("SELECT status FROM member_cards WHERE code=?",String.class,code));
+        assertEquals("بيع مباشر",jdbc.queryForObject("SELECT batch_label FROM member_cards WHERE code=?",String.class,code));
+        var again=sell(root,UUID.randomUUID(),nextPhone(),code,planId);
+        assertEquals(409,again.status());assertEquals("CARD_NOT_AVAILABLE",again.text("code"));
+        assertEquals(204,claim(code,phone,"048291").status());
+    }
 }
