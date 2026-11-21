@@ -27,7 +27,8 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * Scan and sell. A sale is ONE transaction: the wallet debit, the member's points, the stock and the
- * receipt are saved together or not at all (decisions 6-17, 70-73). There is no reversal (decision 7).
+ * receipt are saved together or not at all (decisions 6-17, 70-73). It is reversed only by a cancellation
+ * the member accepts (SaleCancellationService).
  */
 @Service
 @Profile("local-postgres")
@@ -40,14 +41,17 @@ public class SaleService {
   private final WalletDebits wallets;
   private final PointsCredits points;
   private final SaleViews views;
+  private final SaleEvents events;
   private final TransactionTemplate tx;
   private final Clock clock;
 
   public SaleService(
       SalesRepository repository, Sellers sellers, MemberScans scans, ProductSales products, WalletDebits wallets,
-      PointsCredits points, SaleViews views, @Qualifier("salesTransactions") TransactionTemplate tx, Clock clock) {
+      PointsCredits points, SaleViews views, SaleEvents events,
+      @Qualifier("salesTransactions") TransactionTemplate tx, Clock clock) {
     this.repository = repository; this.sellers = sellers; this.scans = scans; this.products = products;
-    this.wallets = wallets; this.points = points; this.views = views; this.tx = tx; this.clock = clock;
+    this.wallets = wallets; this.points = points; this.views = views; this.events = events; this.tx = tx;
+    this.clock = clock;
   }
 
   public SalesContext context(UUID actor, UUID sid, String role) {
@@ -134,16 +138,17 @@ public class SaleService {
         long minimumPoints = Rules.minimumPoints(gross);
         total = r.points() == null ? minimumPoints : r.points();
         if (total < minimumPoints) throw fail(Kind.INVALID, "POINTS_BELOW_MINIMUM");
-        if (total > gross) throw fail(Kind.INVALID, "POINTS_ABOVE_TOTAL");
       }
       if (!wallets.debitSalePoints(seller.partner().id(), total, saleId, actor, now))
         throw fail(Kind.CONFLICT, "INSUFFICIENT_WALLET_BALANCE");
       for (var l : lines) products.takeStock(l.productId(), l.quantity(), now);
       points.credit(scan.memberAccount(), total, POINTS_KIND, saleId, now);
       var sale = new Sale(saleId, r.requestId(), digest, seller.partner().id(), scan.storeId(), scan.memberAccount(),
-          scan.cardId(), scan.id(), r.kind(), "SYP", gross, gross - net, net, percent, total, actor, now);
+          scan.cardId(), scan.id(), r.kind(), "SYP", gross, gross - net, net, percent, total, actor, now,
+          SaleStatus.COMPLETED, null);
       repository.insertSale(sale, lines);
       repository.consumeScan(scan.id(), now);
+      events.saleCompleted(sale);
       return views.sale(sale, lines);
     });
   }

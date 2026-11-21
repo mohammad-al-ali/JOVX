@@ -16,9 +16,11 @@ import org.springframework.web.bind.annotation.*;
 @Profile("local-postgres")
 public class PartnerController {
   private final PartnerService registration;
+  private final PartnerWorkspaceService workspace;
 
-  public PartnerController(PartnerService registration) {
+  public PartnerController(PartnerService registration, PartnerWorkspaceService workspace) {
     this.registration = registration;
+    this.workspace = workspace;
   }
 
   @PostMapping("/api/v1/admin/partners")
@@ -40,6 +42,13 @@ public class PartnerController {
   @PreAuthorize("hasRole('PARTNER')")
   public PartnerContextResponse context(JwtAuthenticationToken actor) {
     return registration.context(UUID.fromString(actor.getName()));
+  }
+
+  @GetMapping("/api/v1/partner/workspace")
+  @PreAuthorize("hasRole('PARTNER') or hasRole('PARTNER_EMPLOYEE')")
+  public WorkspaceResponse workspace(JwtAuthenticationToken actor) {
+    boolean owner = actor.getAuthorities().stream().anyMatch(a -> "ROLE_PARTNER".equals(a.getAuthority()));
+    return workspace.workspace(UUID.fromString(actor.getName()), sid(actor), owner);
   }
 
   @GetMapping("/api/v1/reference-data")

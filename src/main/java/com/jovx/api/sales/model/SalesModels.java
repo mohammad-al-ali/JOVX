@@ -16,7 +16,24 @@ public final class SalesModels {
   public static final int MAX_LINES = 50;
   public static final int MAX_QUANTITY = 1000;
 
+  /** Cancellation (decision 2026-11-21): asked within 24 h of the sale, decided by the member within 24 h. */
+  public static final Duration CANCEL_REQUEST_WINDOW = Duration.ofHours(24);
+  public static final Duration CANCEL_DECISION_WINDOW = Duration.ofHours(24);
+
   public enum SaleKind { PRODUCTS, FREE }
+
+  public enum SaleStatus { COMPLETED, CANCELLED }
+
+  public enum CancellationStatus { PENDING, ACCEPTED, REJECTED, EXPIRED }
+
+  public record Cancellation(
+      UUID id, UUID saleId, UUID requestedBy, Instant requestedAt, Instant expiresAt, CancellationStatus status,
+      String reason, Instant decidedAt) {
+    /** Pending and still within the member's decision window. */
+    public boolean open(Instant now) {
+      return status == CancellationStatus.PENDING && now.isBefore(expiresAt);
+    }
+  }
 
   public enum ScanMethod { QR, CARD }
 
@@ -27,7 +44,12 @@ public final class SalesModels {
   public record Sale(
       UUID id, UUID requestId, String requestDigest, UUID partnerId, UUID storeId, UUID memberAccount, UUID cardId,
       UUID scanId, SaleKind kind, String currency, long grossAmount, long discountAmount, long netAmount,
-      BigDecimal discountPercent, long points, UUID sellerId, Instant createdAt) {}
+      BigDecimal discountPercent, long points, UUID sellerId, Instant createdAt, SaleStatus status,
+      Instant cancelledAt) {
+    public boolean cancelled() {
+      return status == SaleStatus.CANCELLED;
+    }
+  }
 
   public record SaleLine(
       int lineNo, UUID productId, String name, long unitPrice, long unitMemberPrice, long unitPoints, int quantity) {

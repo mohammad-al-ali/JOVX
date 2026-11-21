@@ -43,6 +43,11 @@ public class ProductSaleService implements ProductSales {
     repository.updateStock(productId, p.stock() - quantity, now);
   }
 
+  public void returnStock(UUID productId, int quantity, Instant now) {
+    repository.lock(productId).filter(Product::stockTracked)
+        .ifPresent(p -> repository.updateStock(productId, Math.min(com.jovx.api.catalog.model.CatalogModels.MAX_STOCK, p.stock() + quantity), now));
+  }
+
   private BigDecimal minimumDiscount(UUID partnerId) {
     return partners.byId(partnerId).map(PartnerLookup.PartnerRef::minimumDiscountPercent).orElse(BigDecimal.ZERO);
   }

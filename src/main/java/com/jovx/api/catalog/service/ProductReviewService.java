@@ -6,6 +6,7 @@ import com.jovx.api.catalog.dto.CatalogDtos.*;
 import com.jovx.api.catalog.model.CatalogModels.*;
 import com.jovx.api.catalog.repository.CatalogRepository;
 import com.jovx.api.common.DomainException.Kind;
+import com.jovx.api.notifications.api.Notifier;
 import com.jovx.api.partners.api.PartnerLookup;
 import com.jovx.api.partners.api.PartnerLookup.PartnerRef;
 import com.jovx.api.partners.api.PartnerLookup.StoreRef;
@@ -23,6 +24,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 @Service
 @Profile("local-postgres")
 public class ProductReviewService {
+  private final Notifier notifier;
   static final String PERMISSION = "catalog.review";
   private final CatalogRepository repository;
   private final CatalogService catalog;
@@ -32,7 +34,8 @@ public class ProductReviewService {
   private final Clock clock;
 
   public ProductReviewService(CatalogRepository repository, CatalogService catalog, PartnerLookup partners,
-      AdministrationAccess access, @Qualifier("catalogTransactions") TransactionTemplate tx, Clock clock) {
+      AdministrationAccess access, @Qualifier("catalogTransactions") TransactionTemplate tx, Clock clock, Notifier notifier) {
+    this.notifier = notifier;
     this.repository = repository; this.catalog = catalog; this.partners = partners; this.access = access;
     this.tx = tx; this.clock = clock;
   }
@@ -82,6 +85,15 @@ public class ProductReviewService {
       repository.event(productId, actor, action, clean, now);
       var store = partners.store(product.storeId()).orElse(null);
       var partner = partners.byId(product.partnerId()).orElseThrow();
+      String title = switch (status) {
+        case APPROVED -> "قُبل منتجك";
+        case REJECTED -> "رُفض منتجك";
+        default -> "أُخفي منتجك";
+      };
+      String body = "«" + product.name() + "»" + (status == ReviewStatus.APPROVED
+          ? " ظاهر الآن للأعضاء." : ". السبب: " + clean);
+      partners.ownerAccount(product.partnerId()).ifPresent(owner -> notifier.notify(owner, Notifier.PRODUCT_REVIEWED,
+          title, body, java.util.Map.of("productId", productId.toString()), now));
       return catalog.view(repository.product(productId).orElseThrow(), store, partner);
     });
   }

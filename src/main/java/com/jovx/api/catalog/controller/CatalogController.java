@@ -97,6 +97,21 @@ public class CatalogController {
     return catalog.publicStoreProducts(storeId);
   }
 
+  @GetMapping("/api/v1/public/products")
+  public PublicProductPage publicSearch(
+      @RequestParam(required = false) String q,
+      @RequestParam(required = false) UUID categoryId,
+      @RequestParam(required = false) UUID cityId,
+      @RequestParam(required = false) UUID storeId,
+      @RequestParam(required = false) Long minPrice,
+      @RequestParam(required = false) Long maxPrice,
+      @RequestParam(required = false) Boolean inStock,
+      @RequestParam(required = false) String sort,
+      @RequestParam(required = false) Integer offset,
+      @RequestParam(required = false) Integer limit) {
+    return catalog.publicSearch(q, categoryId, cityId, storeId, minPrice, maxPrice, inStock, sort, offset, limit);
+  }
+
   /** Development storage only; online images are served by Cloudflare R2. */
   @GetMapping("/api/v1/public/images/products/{productId}/{file}")
   public ResponseEntity<byte[]> image(@PathVariable String productId, @PathVariable String file) {

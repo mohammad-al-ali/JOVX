@@ -130,7 +130,39 @@ JOVX_MIGRATION_PASSWORD
 | لوحة المبيعات (اليوم/7/30 يومًا بتوقيت دمشق) | `GET /api/v1/partner/sales/summary?days=&storeId=` | الشريك، أو `report.read.partner` أو `report.read.branch` |
 | مشتريات العضو وتوفيره | `GET /api/v1/member/purchases` | العضو |
 
-البيع معاملة واحدة: خصم النقاط من محفظة الشريك، وإضافتها للعضو، وإنقاص المخزون، والإيصال؛ تنجح معًا أو لا يحدث شيء. رمز QR يُستهلك عند المسح، والمسح الواحد لفاتورة واحدة خلال 5 دقائق وللبائع الذي مسح. رصيد المحفظة الناقص يرفض البيع (`INSUFFICIENT_WALLET_BALANCE`). خصم البيع الحر لا يقل عن الحد الأدنى، ونقاطه بين 2% من الإجمالي قبل الخصم والإجمالي نفسه. `requestId` يمنع البيع المكرر عند إعادة المحاولة، ونفس `requestId` بمحتوى مختلف يُرفض (`REQUEST_ID_REUSED`). لا عكس للعمليات.
+البيع معاملة واحدة: خصم النقاط من محفظة الشريك، وإضافتها للعضو، وإنقاص المخزون، والإيصال؛ تنجح معًا أو لا يحدث شيء. رمز QR يُستهلك عند المسح، والمسح الواحد لفاتورة واحدة خلال 5 دقائق وللبائع الذي مسح. رصيد المحفظة الناقص يرفض البيع (`INSUFFICIENT_WALLET_BALANCE`). خصم البيع الحر لا يقل عن الحد الأدنى، ونقاطه لا تقل عن 2% من الإجمالي قبل الخصم (لا حد أعلى سوى رصيد المحفظة). `requestId` يمنع البيع المكرر عند إعادة المحاولة، ونفس `requestId` بمحتوى مختلف يُرفض (`REQUEST_ID_REUSED`). العكس الوحيد هو إلغاء يوافق عليه العضو (V14 أدناه).
+
+## إلغاء الفاتورة بموافقة العضو (V14)
+
+| العملية | المسار | من يملكها |
+|---|---|---|
+| طلب الإلغاء (خلال 24 ساعة من البيع، سبب اختياري) | `POST /api/v1/partner/sales/{saleId}/cancellation` | الشريك أي فاتورة؛ الموظف ذو `sale.confirm` أو `sale.free` فواتيره فقط (`SALE_NOT_YOURS`) |
+| الطلبات المنتظرة | `GET /api/v1/member/cancellations` | العضو |
+| القبول أو الرفض (خلال 24 ساعة من الطلب) | `POST /api/v1/member/cancellations/{id}/accept` و`/reject` | العضو صاحب الفاتورة |
+
+القبول معاملة واحدة: تُسحب النقاط من العضو (`INSUFFICIENT_MEMBER_POINTS` إن صرفها، ويبقى الطلب معلّقًا)، وتعود لمحفظة الشريك (`SALE_POINTS_RETURNED`)، ويعود المخزون، وتصير الفاتورة `CANCELLED`. التقارير وأكثر المنتجات وتوفير العضو تستثني الملغاة، والسجل يعرضها. تكرار نفس الجواب آمن. الرموز: `CANCEL_WINDOW_CLOSED`، `CANCEL_ALREADY_PENDING`، `CANCEL_REQUEST_EXPIRED`، `CANCEL_REQUEST_CLOSED`، `SALE_ALREADY_CANCELLED`.
+
+## بحث المنتجات العام (V13)
+
+`GET /api/v1/public/products?q=&categoryId=&cityId=&storeId=&minPrice=&maxPrice=&inStock=&sort=&offset=&limit=` بدون دخول. يعرض المنتجات المعتمدة والمنشورة في المتاجر النشطة لشركاء نشطين فقط. البحث في اسم المنتج ووصفه واسم المتجر، بتطبيع عربي (`jovx_ar_norm`: الهمزات، ى/ي، ة/ه، التشكيل). الترتيب `NEWEST` (افتراضي)، `PRICE_ASC`، `PRICE_DESC` (بسعر العضو)، `SAVING_DESC`، `POINTS_DESC`، `NAME`. الصفحة 20 افتراضيًا و50 حدًا أقصى، مع `total`. القيم غير الصالحة: `INVALID_QUERY`.
+
+## الشريك والموظف والإدارة: إضافات 2026-11-21
+
+| العملية | المسار | من يملكها |
+|---|---|---|
+| ما يراه الحساب في تطبيق الشريك (المتاجر والصلاحيات) | `GET /api/v1/partner/workspace` | الشريك أو موظفه |
+| إعادة تعيين PIN شريك نسيه (تنهي كل جلساته) | `PUT /api/v1/admin/partners/{id}/pin` | SUPER_ADMIN أو `partner.pin.reset` |
+
+## الإشعارات (V15)
+
+| العملية | المسار | من يملكها |
+|---|---|---|
+| تسجيل الجهاز / إلغاؤه عند الخروج | `PUT /api/v1/devices/token`، `POST /api/v1/devices/token/removal` | العضو أو الشريك |
+| صندوق الإشعارات، قراءة واحد، قراءة الكل | `GET /api/v1/notifications`، `POST .../{id}/read`، `POST .../read-all` | العضو أو الشريك |
+| تشغيل أنواع الإشعارات وإيقافها | `GET/PUT /api/v1/admin/notification-settings` | SUPER_ADMIN |
+| رسالة لشريك أو لكل الشركاء النشطين | `POST /api/v1/admin/partner-messages` | SUPER_ADMIN أو `notification.manage` |
+
+كل إشعار صف في الصندوق يُكتب في معاملة العملية نفسها، ونسخة Push تنتظر في `notification_outbox` وتُرسل بعد الالتزام (كل 10 ثوانٍ، `SKIP LOCKED`، إعادة محاولة حتى 6 مرات). بلا `FIREBASE_SERVICE_ACCOUNT_BASE64` تبقى في الصندوق فقط (`SKIPPED`). موظفو الشريك والإدارة لا يتلقون إشعارات (قرار 31). تنبيه الرصيد المنخفض يوميًا 9:00 بتوقيت دمشق، مرة واحدة لكل شريك في اليوم. متغيرات: `FIREBASE_SERVICE_ACCOUNT_BASE64`، `NOTIFICATIONS_DISPATCH_ENABLED`، `LOW_BALANCE_ALERTS_ENABLED`. الدليل: `docs/firebase-setup-ar.md` في مساحة العمل.
 
 ## البناء والاختبارات
 

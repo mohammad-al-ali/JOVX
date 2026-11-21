@@ -74,6 +74,54 @@ public final class CatalogRepository {
         PRODUCT, store.toString());
   }
 
+  /**
+   * Visible products (approved, published, not deleted) of the listed stores. Member price, filters,
+   * order and the total are computed in one query; the store set and each partner minimum come from
+   * partners::api, so no other module's table is read here.
+   */
+  public SearchPage search(List<UUID> stores, List<java.math.BigDecimal> minimums, ProductSearch q,
+      Collection<UUID> storesMatchingText) {
+    var args = new ArrayList<Object>();
+    args.add(stores.stream().map(UUID::toString).toArray(String[]::new));
+    args.add(minimums.toArray(java.math.BigDecimal[]::new));
+    var where = new StringBuilder(" WHERE p.deleted_at IS NULL AND p.review_status='APPROVED' AND p.published");
+    if (q.categoryId() != null) { where.append(" AND p.category_id=?"); args.add(q.categoryId().toString()); }
+    if (q.inStockOnly()) where.append(" AND NOT (p.stock_tracked AND COALESCE(p.stock,0)=0)");
+    if (!q.text().isEmpty()) {
+      String like = "%" + q.text().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%";
+      where.append(" AND (jovx_ar_norm(p.name) LIKE ? OR jovx_ar_norm(p.description) LIKE ?");
+      args.add(like); args.add(like);
+      if (!storesMatchingText.isEmpty()) {
+        where.append(" OR p.store_id::text = ANY(?)");
+        args.add(storesMatchingText.stream().map(UUID::toString).toArray(String[]::new));
+      }
+      where.append(")");
+    }
+    var outer = new StringBuilder(" WHERE TRUE");
+    if (q.minPrice() != null) { outer.append(" AND member_price>=?"); args.add(q.minPrice()); }
+    if (q.maxPrice() != null) { outer.append(" AND member_price<=?"); args.add(q.maxPrice()); }
+    String order = switch (q.sort()) {
+      case NEWEST -> "created_at DESC";
+      case PRICE_ASC -> "member_price ASC";
+      case PRICE_DESC -> "member_price DESC";
+      case SAVING_DESC -> "price_amount-member_price DESC";
+      case POINTS_DESC -> "points DESC";
+      case NAME -> "name ASC";
+    };
+    args.add(q.limit()); args.add(q.offset());
+    String sql = "WITH s(store_id,minimum) AS (SELECT * FROM unnest(?::text[],?::numeric[]))"
+        + " SELECT " + PRODUCT_COLUMNS + ",member_price,COUNT(*) OVER() FROM (SELECT p.*,"
+        + " COALESCE(p.member_price_amount,round(p.price_amount*(100-s.minimum)/100)::bigint) AS member_price"
+        + " FROM products p JOIN s ON s.store_id=p.store_id::text" + where + ") x" + outer
+        + " ORDER BY " + order + ",id LIMIT ? OFFSET ?";
+    long[] total = {0};
+    var hits = jdbc.query(sql, (r, i) -> {
+      total[0] = r.getLong(21);
+      return new SearchHit(PRODUCT.mapRow(r, i), r.getLong(20));
+    }, args.toArray());
+    return new SearchPage(total[0], hits);
+  }
+
   public List<Product> reviewQueue(ReviewStatus status, int limit) {
     return jdbc.query("SELECT " + PRODUCT_COLUMNS + " FROM products WHERE deleted_at IS NULL"
         + (status == null ? "" : " AND review_status=?") + " ORDER BY updated_at LIMIT ?",

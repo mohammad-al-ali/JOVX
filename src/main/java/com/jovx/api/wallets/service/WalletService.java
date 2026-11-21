@@ -31,12 +31,13 @@ public class WalletService {
   private final AdministrationAccess administration;
   private final TransactionTemplate tx;
   private final Clock clock;
+  private final WalletEvents events;
 
   public WalletService(
       WalletRepository repository, PartnerLookup partners, ActorAccess actors, AdministrationAccess administration,
-      @Qualifier("walletTransactions") TransactionTemplate tx, Clock clock) {
+      @Qualifier("walletTransactions") TransactionTemplate tx, Clock clock, WalletEvents events) {
     this.repository = repository; this.partners = partners; this.actors = actors;
-    this.administration = administration; this.tx = tx; this.clock = clock;
+    this.administration = administration; this.tx = tx; this.clock = clock; this.events = events;
   }
 
   /** Who is acting for which partner, and whether they may request a top-up or refund. */
@@ -145,6 +146,7 @@ public class WalletService {
         // The held points leave the wallet; the spendable balance does not change again.
         repository.move(wallet, 0, -q.amount(), LedgerKind.REFUND_HELD, q.id(), actor, now);
       }
+      events.decided(q, true, null, now);
       return RequestView.of(repository.lockRequest(q.id()).orElseThrow(), partner.name());
     });
   }
@@ -160,6 +162,7 @@ public class WalletService {
         var wallet = repository.lockWallet(q.partnerId(), now);
         repository.move(wallet, q.amount(), -q.amount(), LedgerKind.REFUND_RELEASED, q.id(), actor, now);
       }
+      events.decided(q, false, reason.strip(), now);
       return RequestView.of(repository.lockRequest(q.id()).orElseThrow(), partner.name());
     });
   }

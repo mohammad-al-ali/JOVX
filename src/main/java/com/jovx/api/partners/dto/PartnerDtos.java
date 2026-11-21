@@ -56,6 +56,14 @@ public final class PartnerDtos {
   public record PartnerContextResponse(
       UUID partnerId, BigDecimal minimumDiscountPercent, List<StoreRef> stores) {}
 
+  /** owner=true holds every partner permission; an employee gets its explicit grants only. */
+  public record WorkspaceResponse(
+      UUID partnerId,
+      boolean owner,
+      BigDecimal minimumDiscountPercent,
+      List<StoreRef> stores,
+      Set<String> permissions) {}
+
   public record PartnerCreatedResponse(UUID partnerId, UUID accountId, UUID storeId, String status) {}
 
   /** defaults is null until administration chooses a default city and neighborhood. */

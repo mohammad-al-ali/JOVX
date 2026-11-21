@@ -13,6 +13,9 @@ public interface PartnerLookup {
 
   Optional<PartnerRef> byId(UUID partnerId);
 
+  /** The PARTNER account that owns the partner (notifications go to the owner only, decision 31). */
+  Optional<UUID> ownerAccount(UUID partnerId);
+
   /** Every partner, for administration lists. */
   List<PartnerRef> all();
 
@@ -21,6 +24,9 @@ public interface PartnerLookup {
 
   /** Every store of a partner. */
   List<StoreRef> stores(UUID partnerId);
+
+  /** Stores members and guests may browse: active stores of active partners, with the partner minimum. */
+  List<ListedStore> listedStores();
 
   /** Stores a PARTNER_EMPLOYEE is assigned to. */
   Set<UUID> employeeStores(UUID employeeAccount);
@@ -38,4 +44,7 @@ public interface PartnerLookup {
       return "ACTIVE".equals(status);
     }
   }
+
+  record ListedStore(
+      UUID id, UUID partnerId, String name, UUID cityId, String cityName, BigDecimal minimumDiscountPercent) {}
 }

@@ -33,6 +33,9 @@ public final class SalesDtos {
 
   public static final int MAX_QUANTITY_VALUE = 1000;
 
+  /** Optional reason the seller gives the member. */
+  public record CancelRequest(@Size(max = 300) String reason) {}
+
   // ---- responses ----
 
   public record StoreOption(UUID id, String name, boolean active) {}
@@ -68,7 +71,12 @@ public final class SalesDtos {
   public record SaleView(
       UUID id, Instant createdAt, UUID storeId, String storeName, String partnerName, SaleKind kind, String currency,
       long grossAmount, long discountAmount, long netAmount, BigDecimal discountPercent, long points,
-      MemberView member, String sellerName, List<LineView> lines) {}
+      MemberView member, String sellerName, List<LineView> lines, SaleStatus status, Instant cancelledAt,
+      CancellationView cancellation) {}
+
+  /** The latest cancellation request of a sale; a pending one past its window reads EXPIRED. */
+  public record CancellationView(
+      UUID id, CancellationStatus status, Instant requestedAt, Instant expiresAt, String reason, Instant decidedAt) {}
 
   public record TopProductView(UUID productId, String name, long quantity, long net) {}
 

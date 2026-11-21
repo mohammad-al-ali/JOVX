@@ -17,9 +17,14 @@ import org.springframework.stereotype.Repository;
 public final class SalesRepository {
   private static final String SCAN_COLUMNS =
       "id,partner_id,store_id,member_account_id,card_id,method,scanned_by,created_at,expires_at,consumed_at";
-  private static final String SALE_COLUMNS =
+  private static final String INSERT_COLUMNS =
       "id,request_id,request_digest,partner_id,store_id,member_account_id,card_id,scan_id,kind,currency,"
           + "gross_amount,discount_amount,net_amount,discount_percent,points,seller_id,created_at";
+  private static final String SALE_COLUMNS = INSERT_COLUMNS + ",status,cancelled_at";
+  private static final String CANCEL_COLUMNS =
+      "id,sale_id,requested_by,requested_at,expires_at,status,reason,decided_at";
+  /** Reports, best sellers and member savings count completed sales only; history shows every sale. */
+  private static final String COMPLETED = "status='COMPLETED'";
   private final JdbcTemplate jdbc;
 
   public SalesRepository(DataSource source) {
@@ -58,7 +63,7 @@ public final class SalesRepository {
   }
 
   public void insertSale(Sale s, List<SaleLine> lines) {
-    jdbc.update("INSERT INTO sales(" + SALE_COLUMNS + ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    jdbc.update("INSERT INTO sales(" + INSERT_COLUMNS + ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         s.id().toString(), s.requestId().toString(), s.requestDigest(), s.partnerId().toString(), s.storeId().toString(),
         s.memberAccount().toString(), s.cardId().toString(), s.scanId().toString(), s.kind().name(), s.currency(),
         s.grossAmount(), s.discountAmount(), s.netAmount(), s.discountPercent(), s.points(), s.sellerId().toString(),
@@ -68,6 +73,64 @@ public final class SalesRepository {
               + " VALUES (?,?,?,?,?,?,?,?)",
           s.id().toString(), l.lineNo(), l.productId().toString(), l.name(), l.unitPrice(), l.unitMemberPrice(),
           l.unitPoints(), l.quantity());
+  }
+
+  public Optional<Sale> lockSale(UUID id) {
+    return first(jdbc.query("SELECT " + SALE_COLUMNS + " FROM sales WHERE id=? FOR UPDATE", SALE, id.toString()));
+  }
+
+  public void markCancelled(UUID sale, Instant now) {
+    jdbc.update("UPDATE sales SET status='CANCELLED',cancelled_at=? WHERE id=? AND status='COMPLETED'", ts(now), sale.toString());
+  }
+
+  // ---- cancellation requests ----
+
+  public void insertCancellation(Cancellation c) {
+    jdbc.update("INSERT INTO sale_cancellations(" + CANCEL_COLUMNS + ") VALUES (?,?,?,?,?,?,?,?)",
+        c.id().toString(), c.saleId().toString(), c.requestedBy().toString(), ts(c.requestedAt()), ts(c.expiresAt()),
+        c.status().name(), c.reason(), ts(c.decidedAt()));
+  }
+
+  public Optional<Cancellation> cancellation(UUID id) {
+    return first(jdbc.query("SELECT " + CANCEL_COLUMNS + " FROM sale_cancellations WHERE id=?", CANCEL, id.toString()));
+  }
+
+  public Optional<Cancellation> lockCancellation(UUID id) {
+    return first(jdbc.query("SELECT " + CANCEL_COLUMNS + " FROM sale_cancellations WHERE id=? FOR UPDATE", CANCEL, id.toString()));
+  }
+
+  public Optional<Cancellation> pendingFor(UUID sale) {
+    return first(jdbc.query("SELECT " + CANCEL_COLUMNS + " FROM sale_cancellations WHERE sale_id=? AND status='PENDING' FOR UPDATE",
+        CANCEL, sale.toString()));
+  }
+
+  public void decide(UUID id, CancellationStatus status, Instant now) {
+    jdbc.update("UPDATE sale_cancellations SET status=?,decided_at=? WHERE id=? AND status='PENDING'",
+        status.name(), ts(now), id.toString());
+  }
+
+  /** The latest request of each sale, for receipts and history. */
+  public Map<UUID, Cancellation> latestCancellations(Collection<UUID> sales) {
+    var result = new HashMap<UUID, Cancellation>();
+    if (sales.isEmpty()) return result;
+    var keys = sales.stream().map(UUID::toString).toList();
+    String marks = String.join(",", Collections.nCopies(keys.size(), "?"));
+    for (var c : jdbc.query("SELECT DISTINCT ON (sale_id) " + CANCEL_COLUMNS + " FROM sale_cancellations WHERE sale_id IN ("
+        + marks + ") ORDER BY sale_id,(status='PENDING') DESC,requested_at DESC,id DESC", CANCEL, keys.toArray()))
+      result.put(c.saleId(), c);
+    return result;
+  }
+
+  /** Sales of one member with a request still inside its decision window, newest request first. */
+  public List<Sale> salesAwaitingMember(UUID member, Instant now) {
+    return jdbc.query("SELECT " + prefixed("s.") + " FROM sales s JOIN sale_cancellations c ON c.sale_id=s.id"
+            + " WHERE s.member_account_id=? AND s.status='COMPLETED' AND c.status='PENDING' AND c.expires_at>?"
+            + " ORDER BY c.requested_at DESC",
+        SALE, member.toString(), ts(now));
+  }
+
+  private static String prefixed(String p) {
+    return String.join(",", Arrays.stream(SALE_COLUMNS.split(",")).map(c -> p + c).toList());
   }
 
   public List<SaleLine> lines(UUID sale) {
@@ -105,7 +168,8 @@ public final class SalesRepository {
     var args = new ArrayList<Object>();
     String where = where(scope, since, args, "");
     return jdbc.queryForObject("SELECT COUNT(*),COUNT(DISTINCT member_account_id),COALESCE(SUM(gross_amount),0),"
-            + "COALESCE(SUM(discount_amount),0),COALESCE(SUM(net_amount),0),COALESCE(SUM(points),0) FROM sales WHERE " + where,
+            + "COALESCE(SUM(discount_amount),0),COALESCE(SUM(net_amount),0),COALESCE(SUM(points),0) FROM sales WHERE " + where
+            + " AND " + COMPLETED,
         (r, i) -> new Totals(r.getLong(1), r.getLong(2), r.getLong(3), r.getLong(4), r.getLong(5), r.getLong(6)),
         args.toArray());
   }
@@ -115,7 +179,7 @@ public final class SalesRepository {
     String where = where(scope, since, args, "s.");
     args.add(limit);
     return jdbc.query("SELECT l.product_id,MAX(l.name),SUM(l.quantity),SUM(l.unit_member_price*l.quantity)"
-            + " FROM sale_lines l JOIN sales s ON s.id=l.sale_id WHERE " + where
+            + " FROM sale_lines l JOIN sales s ON s.id=l.sale_id WHERE " + where + " AND s." + COMPLETED
             + " GROUP BY l.product_id ORDER BY SUM(l.quantity) DESC,MAX(l.name) LIMIT ?",
         (r, i) -> new TopProduct(UUID.fromString(r.getString(1)), r.getString(2), r.getLong(3), r.getLong(4)),
         args.toArray());
@@ -129,7 +193,7 @@ public final class SalesRepository {
 
   public long[] memberTotals(UUID member) {
     return jdbc.queryForObject("SELECT COUNT(*),COALESCE(SUM(discount_amount),0),COALESCE(SUM(points),0) FROM sales"
-        + " WHERE member_account_id=?", (r, i) -> new long[] {r.getLong(1), r.getLong(2), r.getLong(3)}, member.toString());
+        + " WHERE member_account_id=? AND " + COMPLETED, (r, i) -> new long[] {r.getLong(1), r.getLong(2), r.getLong(3)}, member.toString());
   }
 
   /** Parameters are appended to {@code args}; store ids only come from server-side scope, never raw text. */
@@ -152,7 +216,10 @@ public final class SalesRepository {
       uuid(r, 5), ScanMethod.valueOf(r.getString(6)), uuid(r, 7), instant(r, 8), instant(r, 9), instant(r, 10));
   private static final RowMapper<Sale> SALE = (r, i) -> new Sale(uuid(r, 1), uuid(r, 2), r.getString(3), uuid(r, 4),
       uuid(r, 5), uuid(r, 6), uuid(r, 7), uuid(r, 8), SaleKind.valueOf(r.getString(9)), r.getString(10), r.getLong(11),
-      r.getLong(12), r.getLong(13), r.getBigDecimal(14), r.getLong(15), uuid(r, 16), instant(r, 17));
+      r.getLong(12), r.getLong(13), r.getBigDecimal(14), r.getLong(15), uuid(r, 16), instant(r, 17),
+      SaleStatus.valueOf(r.getString(18)), instant(r, 19));
+  private static final RowMapper<Cancellation> CANCEL = (r, i) -> new Cancellation(uuid(r, 1), uuid(r, 2), uuid(r, 3),
+      instant(r, 4), instant(r, 5), CancellationStatus.valueOf(r.getString(6)), r.getString(7), instant(r, 8));
   private static final RowMapper<SaleLine> LINE = (r, i) -> new SaleLine(r.getInt(1), uuid(r, 2), r.getString(3),
       r.getLong(4), r.getLong(5), r.getLong(6), r.getInt(7));
 

@@ -48,6 +48,8 @@ class PartnerJourneyTest {
     static final UUID CITY=UUID.randomUUID(),OTHER_CITY=UUID.randomUUID(),ADDRESS=UUID.randomUUID(),CATEGORY=UUID.randomUUID();
     @LocalServerPort int port;
     @Autowired JdbcAccountStore accounts;
+    @Autowired com.jovx.api.notifications.service.NotificationDispatcher dispatcher;
+    @Autowired com.jovx.api.wallets.service.LowBalanceAlerts lowBalance;
     @org.springframework.test.context.bean.override.convention.TestBean(name="identityDataSource",methodName="testDataSource") DataSource dataSource;
     @org.springframework.test.context.bean.override.convention.TestBean(name="identityClock",methodName="testClock") Clock clock;
     @org.springframework.test.context.bean.override.convention.TestBean(name="manifestClient",methodName="testManifests") com.jovx.api.releases.service.ManifestClient manifestClient;
@@ -84,6 +86,7 @@ class PartnerJourneyTest {
         r.add("jovx.security.jwt.issuer",()->"https://identity.jovx.test");
         r.add("jovx.security.jwt.audience",()->"jovx-api");
         r.add("jovx.storage.local-dir",()->IMAGES.toString());
+        r.add("jovx.notifications.dispatch-enabled",()->"false");r.add("jovx.wallets.low-balance-alerts-enabled",()->"false");
     }
     static DataSource testDataSource(){setup();return source;}
     static Clock testClock(){return TIME;}
@@ -741,6 +744,22 @@ class PartnerJourneyTest {
         assertEquals(401,login(phone,"048291").status());assertEquals(200,login(phone,"739104").status());
         assertEquals(1,jdbc.queryForObject("SELECT COUNT(*) FROM identity_auth_events WHERE action='PIN_CHANGED' AND account_id=?",Integer.class,created.text("accountId")));
     }
+    @Test void administrationResetsAForgottenPartnerPinOnlyWithTheResetGrant() throws Exception {
+        String root=superAccess();var owner=partner();var admin=login(account(AccountRole.ADMIN));
+        String path=partnerPath(owner)+"/pin",account=owner.created().text("accountId");
+        String phone=jdbc.queryForObject("SELECT phone_e164 FROM users WHERE id=?",String.class,account);
+        assertEquals(403,call("PUT",path,Map.of("pin","553311"),owner.access()).status());
+        assertEquals(204,roleGrants(root,"ADMIN",Set.of("partner.create","partner.store.manage")).status());
+        assertEquals(403,call("PUT",path,Map.of("pin","553311"),admin.access()).status(),"partner.create does not imply reset");
+        assertEquals(204,roleGrants(root,"ADMIN",Set.of("partner.pin.reset")).status());
+        assertEquals(400,call("PUT",path,Map.of("pin","12345"),admin.access()).status());
+        assertEquals(404,call("PUT","/api/v1/admin/partners/"+UUID.randomUUID()+"/pin",Map.of("pin","553311"),root).status());
+        var done=call("PUT",path,Map.of("pin","553311"),admin.access());
+        assertEquals(204,done.status());assertFalse(String.valueOf(done.json()).contains("553311"));
+        assertEquals(401,session(owner.access()).status(),"reset ends every session");
+        assertEquals(401,login(phone,"048291").status());assertEquals(200,login(phone,"553311").status());
+        assertEquals(1,jdbc.queryForObject("SELECT COUNT(*) FROM partner_events WHERE action='PIN_RESET' AND partner_id=?",Integer.class,owner.created().text("partnerId")));
+    }
     @Test void onlyPartnerAccountsUseOwnPinChange() throws Exception {
         String root=superAccess();var owner=partner();String phone=nextPhone();employee(owner,phone,Set.of());
         var body=Map.of("currentPin","012345","newPin","222333");
@@ -1161,6 +1180,23 @@ class PartnerJourneyTest {
         assertEquals(1000,walletBalance(partnerId));
         assertEquals(4000,jdbc.queryForObject("SELECT held FROM partner_wallets WHERE partner_id=?",Long.class,partnerId));
     }
+    @Test void workspaceGivesTheOwnerEveryStoreAndAnEmployeeOnlyItsStoresAndGrants() throws Exception {
+        String root=superAccess();var owner=partner();String phone=nextPhone();
+        assertEquals(201,employee(owner,phone,Set.of("catalog.read","wallet.read")).status());
+        var mine=call("GET","/api/v1/partner/workspace",null,owner.access());
+        assertEquals(200,mine.status());assertTrue(mine.json().path("owner").asBoolean());
+        assertEquals(owner.created().text("partnerId"),mine.text("partnerId"));
+        assertEquals(owner.created().text("storeId"),mine.json().path("stores").get(0).path("id").asString());
+        assertEquals(0,mine.json().path("permissions").size());
+        var staff=login(phone,"012345");
+        var theirs=call("GET","/api/v1/partner/workspace",null,staff.access());
+        assertEquals(200,theirs.status());assertFalse(theirs.json().path("owner").asBoolean());
+        assertEquals(1,theirs.json().path("stores").size());
+        assertEquals(List.of("catalog.read","wallet.read"),
+            java.util.stream.StreamSupport.stream(theirs.json().path("permissions").spliterator(),false).map(n->n.asString()).toList());
+        assertEquals(403,call("GET","/api/v1/partner/workspace",null,root).status());
+        assertEquals(401,call("GET","/api/v1/partner/workspace",null,null).status());
+    }
     @Test void walletAccessFollowsOwnershipGrantsAndPartnerStatus() throws Exception {
         String root=superAccess();var owner=partner();var other=partner();String partnerId=owner.created().text("partnerId");
         var admin=login(account(AccountRole.ADMIN));
@@ -1310,6 +1346,51 @@ class PartnerJourneyTest {
         assertEquals(204,call("DELETE","/api/v1/partner/products/"+id,null,owner.access()).status());
         assertEquals(0,call("GET","/api/v1/partner/stores/"+owner.created().text("storeId")+"/products",null,owner.access()).json().size());
     }
+    String named(String root,Partner owner,String name,long price,long points,Integer stock,boolean approve) throws Exception {
+        var body=productBody(price,null,points,stock!=null,stock);body.put("name",name);
+        var created=createProduct(owner,UUID.randomUUID(),body);assertEquals(201,created.status(),created.json().toString());
+        if(approve)assertEquals("APPROVED",call("POST","/api/v1/admin/catalog/products/"+created.text("id")+"/approve",null,root).text("reviewStatus"));
+        return created.text("id");
+    }
+    List<String> names(Response page){
+        var out=new ArrayList<String>();for(var n:page.json().path("items"))out.add(n.path("name").asString());return out;
+    }
+    @Test void publicSearchFiltersSortsAndPagesOnlyVisibleProductsWithArabicInsensitiveText() throws Exception {
+        String root=superAccess();var owner=partner();String store=owner.created().text("storeId");
+        named(root,owner,"كنافة نابلسية",30000,600,null,true);
+        named(root,owner,"إفطار برغر",10000,900,null,true);
+        named(root,owner,"عصير برتقال",5000,100,0,true);
+        named(root,owner,"منتج معلّق",1000,20,null,false);
+        String base="/api/v1/public/products?storeId="+store;
+
+        var all=call("GET",base+"&sort=PRICE_ASC",null,null);
+        assertEquals(200,all.status(),all.json().toString());assertEquals(3,all.json().path("total").asLong(),"pending products stay hidden");
+        assertEquals(List.of("عصير برتقال","إفطار برغر","كنافة نابلسية"),names(all));
+        var first=all.json().path("items").get(0);
+        assertEquals(4500,first.path("memberPriceAmount").asLong(),"10% automatic member price");
+        assertEquals(store,first.path("storeId").asString());assertFalse(first.path("cityName").asString().isBlank());
+        assertEquals(List.of("كنافة نابلسية","إفطار برغر","عصير برتقال"),names(call("GET",base+"&sort=PRICE_DESC",null,null)));
+        assertEquals(List.of("إفطار برغر","كنافة نابلسية","عصير برتقال"),names(call("GET",base+"&sort=POINTS_DESC",null,null)));
+        assertEquals("كنافة نابلسية",names(call("GET",base+"&sort=SAVING_DESC",null,null)).getFirst(),"3,000 saved");
+
+        assertEquals(List.of("إفطار برغر"),names(call("GET",base+"&q="+enc("افطار"),null,null)),"hamza-insensitive");
+        assertEquals(List.of("كنافة نابلسية"),names(call("GET",base+"&q="+enc("كُنافه"),null,null)),"tashkeel and ta marbuta");
+        assertEquals(List.of("إفطار برغر","كنافة نابلسية"),names(call("GET",base+"&inStock=true&sort=PRICE_ASC",null,null)));
+        assertEquals(List.of("إفطار برغر"),names(call("GET",base+"&minPrice=5000&maxPrice=20000",null,null)));
+        assertEquals(0,call("GET",base+"&categoryId=7f0b1c1e-0002-4a00-8000-000000000002",null,null).json().path("total").asLong());
+        String storeName=call("GET","/api/v1/partner/workspace",null,owner.access()).json().path("stores").get(0).path("name").asString();
+        assertEquals(3,call("GET",base+"&q="+enc(storeName),null,null).json().path("total").asLong(),"the store name matches its products");
+
+        var page=call("GET",base+"&sort=PRICE_ASC&limit=1&offset=1",null,null);
+        assertEquals(3,page.json().path("total").asLong());assertEquals(List.of("إفطار برغر"),names(page));
+        for(String bad:List.of("&sort=CHEAPEST","&limit=51","&limit=0","&offset=-1","&minPrice=10&maxPrice=5","&minPrice=-1")){
+            var refused=call("GET",base+bad,null,null);
+            assertEquals(400,refused.status(),bad);assertEquals("INVALID_QUERY",refused.text("code"),bad);
+        }
+        assertEquals(204,call("PUT","/api/v1/partner/stores/"+store+"/status",Map.of("status","SUSPENDED"),owner.access()).status());
+        assertEquals(0,call("GET",base,null,null).json().path("total").asLong(),"a suspended store disappears");
+    }
+    static String enc(String value){return java.net.URLEncoder.encode(value,java.nio.charset.StandardCharsets.UTF_8);}
     @Test void imagesAreReencodedAtMostFourAndSendTheProductBackToReview() throws Exception {
         String root=superAccess();var owner=partner();
         String id=createProduct(owner,UUID.randomUUID(),productBody(5000,null,100,false,null)).text("id");
@@ -1396,6 +1477,167 @@ class PartnerJourneyTest {
     Response scanMember(String access,Partner owner,String code) throws Exception {
         return call("POST","/api/v1/partner/sales/scans",Map.of("storeId",owner.created().text("storeId"),"code",code),access);
     }
+    Response cancel(String access,String saleId) throws Exception {
+        return call("POST","/api/v1/partner/sales/"+saleId+"/cancellation",Map.of("reason","خطأ في الكمية"),access);
+    }
+    String requestId(Response sale){return sale.json().path("cancellation").path("id").asString();}
+    @Test void anAcceptedCancellationMovesPointsBackRestoresStockAndLeavesTheReports() throws Exception {
+        String root=superAccess();var owner=partner();String partnerId=owner.created().text("partnerId");
+        var m=claimedMember(root,plan(root,"إلغاء "+UUID.randomUUID(),6,true));
+        String product=approvedProduct(root,owner,10000,200,5);
+        walletPost("/api/v1/admin/wallets/"+partnerId+"/topups",root,10000,UUID.randomUUID(),"CASH");
+        var member=login(m.phone(),"048291");
+        var sale=sellProducts(owner.access(),UUID.randomUUID(),scanMember(owner.access(),owner,m.code()).text("scanId"),product,2);
+        String saleId=sale.text("id");
+        assertEquals(9600,walletBalance(partnerId));assertEquals(400,memberPoints(m.id()));assertEquals("COMPLETED",sale.text("status"));
+
+        var asked=cancel(owner.access(),saleId);
+        assertEquals(201,asked.status(),asked.json().toString());
+        assertEquals("PENDING",asked.json().path("cancellation").path("status").asString());
+        assertEquals("خطأ في الكمية",asked.json().path("cancellation").path("reason").asString());
+        assertEquals("CANCEL_ALREADY_PENDING",cancel(owner.access(),saleId).text("code"));
+        var waiting=call("GET","/api/v1/member/cancellations",null,member.access());
+        assertEquals(1,waiting.json().size());assertEquals(saleId,waiting.json().get(0).path("id").asString());
+        assertEquals(9600,walletBalance(partnerId),"nothing moves before the member answers");
+
+        String request=requestId(asked);
+        var other=claimedMember(root,plan(root,"آخر "+UUID.randomUUID(),6,true));
+        assertEquals(404,call("POST","/api/v1/member/cancellations/"+request+"/accept",null,login(other.phone(),"048291").access()).status());
+        assertEquals(403,call("POST","/api/v1/member/cancellations/"+request+"/accept",null,owner.access()).status());
+
+        var done=call("POST","/api/v1/member/cancellations/"+request+"/accept",null,member.access());
+        assertEquals(200,done.status(),done.json().toString());
+        assertEquals("CANCELLED",done.text("status"));assertEquals("ACCEPTED",done.json().path("cancellation").path("status").asString());
+        assertEquals(10000,walletBalance(partnerId));assertEquals(0,memberPoints(m.id()));
+        assertEquals(5,jdbc.queryForObject("SELECT stock FROM products WHERE id=?",Integer.class,product));
+        assertEquals(1,jdbc.queryForObject("SELECT COUNT(*) FROM wallet_ledger WHERE partner_id=? AND kind='SALE_POINTS_RETURNED' AND delta=400 AND reference_id=?",
+            Integer.class,partnerId,saleId));
+        boolean returned=false;
+        for(var e:call("GET","/api/v1/member/points/history",null,member.access()).json())
+            returned|="SALE_CANCELLED".equals(e.path("kind").asString())&&e.path("delta").asLong()==-400;
+        assertTrue(returned,"the points leave the member with their own movement");
+
+        var again=call("POST","/api/v1/member/cancellations/"+request+"/accept",null,member.access());
+        assertEquals(200,again.status());assertEquals(10000,walletBalance(partnerId),"a repeated accept moves nothing");
+        assertEquals("CANCEL_REQUEST_CLOSED",call("POST","/api/v1/member/cancellations/"+request+"/reject",null,member.access()).text("code"));
+        assertEquals("SALE_ALREADY_CANCELLED",cancel(owner.access(),saleId).text("code"));
+
+        var summary=call("GET","/api/v1/partner/sales/summary?days=1",null,owner.access());
+        assertEquals(0,summary.json().path("sales").asLong(),"cancelled sales leave the reports");
+        var purchases=call("GET","/api/v1/member/purchases",null,member.access()).json();
+        assertEquals(0,purchases.path("totalSavings").asLong());
+        assertEquals("CANCELLED",purchases.path("items").get(0).path("status").asString(),"history still shows it");
+    }
+    @Test void cancellationWindowsShortPointsRejectionAndTheSellerRule() throws Exception {
+        String root=superAccess();var owner=partner();String partnerId=owner.created().text("partnerId");
+        var m=claimedMember(root,plan(root,"مهلة "+UUID.randomUUID(),6,true));
+        walletPost("/api/v1/admin/wallets/"+partnerId+"/topups",root,100000,UUID.randomUUID(),"CASH");
+        var member=login(m.phone(),"048291");
+        String cashierPhone=nextPhone();assertEquals(201,employee(owner,cashierPhone,Set.of("member.scan","sale.confirm","sale.free")).status());
+        var cashier=login(cashierPhone,"012345");
+        String product=approvedProduct(root,owner,10000,200,null);
+
+        String ownerSale=sellProducts(owner.access(),UUID.randomUUID(),scanMember(owner.access(),owner,m.code()).text("scanId"),product,1).text("id");
+        String cashierSale=sellProducts(cashier.access(),UUID.randomUUID(),scanMember(cashier.access(),owner,m.code()).text("scanId"),product,1).text("id");
+        var notYours=cancel(cashier.access(),ownerSale);
+        assertEquals(403,notYours.status());assertEquals("SALE_NOT_YOURS",notYours.text("code"));
+        var mine=cancel(cashier.access(),cashierSale);assertEquals(201,mine.status(),mine.json().toString());
+
+        var rejected=call("POST","/api/v1/member/cancellations/"+requestId(mine)+"/reject",null,member.access());
+        assertEquals("REJECTED",rejected.json().path("cancellation").path("status").asString());assertEquals("COMPLETED",rejected.text("status"));
+        assertEquals(400,memberPoints(m.id()));
+
+        jdbc.update("UPDATE points_accounts SET balance=100 WHERE member_account_id=?",m.id());
+        var short_=call("POST","/api/v1/member/cancellations/"+requestId(cancel(owner.access(),cashierSale))+"/accept",null,member.access());
+        assertEquals(409,short_.status());assertEquals("INSUFFICIENT_MEMBER_POINTS",short_.text("code"),"spent points block the cancellation");
+        assertEquals(100,memberPoints(m.id()));
+
+        TIME.advance(Duration.ofHours(24).plusMinutes(1));
+        member=login(m.phone(),"048291");
+        String ownerPhone=jdbc.queryForObject("SELECT phone_e164 FROM users WHERE id=?",String.class,owner.created().text("accountId"));
+        owner=new Partner(login(ownerPhone,"048291").access(),owner.created());
+        var waiting=call("GET","/api/v1/member/cancellations",null,member.access());
+        assertEquals(200,waiting.status());
+        assertEquals(0,waiting.json().size(),"the member's 24 hours passed");
+        var receipt=call("GET","/api/v1/partner/sales/"+cashierSale,null,owner.access());
+        assertEquals("EXPIRED",receipt.json().path("cancellation").path("status").asString());
+        var late=cancel(owner.access(),ownerSale);
+        assertEquals(409,late.status());assertEquals("CANCEL_WINDOW_CLOSED",late.text("code"),"24 hours after the sale");
+    }
+    JsonNode kind(JsonNode box,String kind){
+        for(var n:box.path("items"))if(kind.equals(n.path("kind").asString()))return n;
+        return box.path("missing-"+kind);
+    }
+    JsonNode inbox(String access) throws Exception {
+        var r=call("GET","/api/v1/notifications",null,access);assertEquals(200,r.status(),r.json().toString());return r.json();
+    }
+    @Test void aSaleNotifiesTheMemberInTheSameTransactionAndTheSwitchStopsIt() throws Exception {
+        String root=superAccess();var owner=partner();String partnerId=owner.created().text("partnerId");
+        var m=claimedMember(root,plan(root,"إشعار "+UUID.randomUUID(),6,true));
+        var member=login(m.phone(),"048291");
+        String product=approvedProduct(root,owner,10000,200,null);
+
+        var refused=sellProducts(owner.access(),UUID.randomUUID(),scanMember(owner.access(),owner,m.code()).text("scanId"),product,1);
+        assertEquals("INSUFFICIENT_WALLET_BALANCE",refused.text("code"));
+        assertEquals(0,inbox(member.access()).path("items").size(),"a failed sale leaves no notification");
+
+        walletPost("/api/v1/admin/wallets/"+partnerId+"/topups",root,10000,UUID.randomUUID(),"CASH");
+        String saleId=sellProducts(owner.access(),UUID.randomUUID(),scanMember(owner.access(),owner,m.code()).text("scanId"),product,1).text("id");
+        var box=inbox(member.access());
+        assertEquals(1,box.path("unread").asLong());
+        var n=box.path("items").get(0);
+        assertEquals("SALE_RECEIPT",n.path("kind").asString());assertEquals(saleId,n.path("data").path("saleId").asString());
+        assertTrue(n.path("body").asString().contains("9,000"),n.path("body").asString());
+        assertEquals(204,call("PUT","/api/v1/devices/token",Map.of("token","device-"+UUID.randomUUID(),"platform","ANDROID"),member.access()).status());
+        assertEquals(204,call("POST","/api/v1/notifications/"+n.path("id").asString()+"/read",null,member.access()).status());
+        assertEquals(0,inbox(member.access()).path("unread").asLong());
+        assertEquals(404,call("POST","/api/v1/notifications/"+n.path("id").asString()+"/read",null,owner.access()).status(),"another account's notification");
+
+        while(dispatcher.dispatchDue()>0){}
+        assertEquals("SKIPPED",jdbc.queryForObject("SELECT status FROM notification_outbox WHERE notification_id=?",String.class,n.path("id").asString()));
+        assertEquals("PUSH_NOT_CONFIGURED",jdbc.queryForObject("SELECT last_error FROM notification_outbox WHERE notification_id=?",String.class,n.path("id").asString()));
+
+        var admin=login(account(AccountRole.ADMIN));
+        assertEquals(403,call("PUT","/api/v1/admin/notification-settings",Map.of("changes",List.of(Map.of("kind","SALE_RECEIPT","enabled",false))),admin.access()).status());
+        try {
+            var off=call("PUT","/api/v1/admin/notification-settings",Map.of("changes",List.of(Map.of("kind","SALE_RECEIPT","enabled",false))),root);
+            assertEquals(200,off.status(),off.json().toString());
+            assertEquals("UNKNOWN_NOTIFICATION_KIND",call("PUT","/api/v1/admin/notification-settings",Map.of("changes",List.of(Map.of("kind","NOPE","enabled",false))),root).text("code"));
+            sellProducts(owner.access(),UUID.randomUUID(),scanMember(owner.access(),owner,m.code()).text("scanId"),product,1);
+            assertEquals(1,inbox(member.access()).path("items").size(),"a switched-off kind is not raised");
+        } finally {
+            call("PUT","/api/v1/admin/notification-settings",Map.of("changes",List.of(Map.of("kind","SALE_RECEIPT","enabled",true))),root);
+        }
+        String employeePhone=nextPhone();employee(owner,employeePhone,Set.of("member.scan"));
+        assertEquals(403,call("GET","/api/v1/notifications",null,login(employeePhone,"012345").access()).status(),"employees get no notifications");
+    }
+    @Test void partnerHearsAboutReviewsWalletDecisionsLowBalanceAndAdministrationMessages() throws Exception {
+        String root=superAccess();var owner=partner();String partnerId=owner.created().text("partnerId");
+        String product=approvedProduct(root,owner,10000,200,null);
+        var reviewed=kind(inbox(owner.access()),"PRODUCT_REVIEWED");
+        assertEquals(product,reviewed.path("data").path("productId").asString());
+
+        String topup=walletPost("/api/v1/partner/wallet/topups",owner.access(),5000,UUID.randomUUID(),"CASH").text("id");
+        assertEquals(200,call("POST","/api/v1/admin/wallets/requests/"+topup+"/reject",Map.of("reason","لم يصل المبلغ"),root).status());
+        assertTrue(kind(inbox(owner.access()),"WALLET_REQUEST_RESULT").path("body").asString().contains("لم يصل المبلغ"));
+
+        int alerted=lowBalance.run();
+        assertTrue(alerted>=1);
+        assertFalse(kind(inbox(owner.access()),"LOW_BALANCE").isMissingNode());
+        assertEquals(0,lowBalance.run(),"once a day");
+
+        var admin=login(account(AccountRole.ADMIN));UUID request=UUID.randomUUID();
+        var body=Map.of("requestId",request,"partnerId",partnerId,"title","صيانة","body","توقف قصير الليلة");
+        assertEquals(403,call("POST","/api/v1/admin/partner-messages",body,admin.access()).status());
+        assertEquals(204,roleGrants(root,"ADMIN",Set.of("notification.manage")).status());
+        var sent=call("POST","/api/v1/admin/partner-messages",body,admin.access());
+        assertEquals(201,sent.status(),sent.json().toString());assertEquals(1,sent.json().path("recipients").asInt());
+        assertEquals(1,call("POST","/api/v1/admin/partner-messages",body,admin.access()).json().path("recipients").asInt());
+        long messages=0;for(var n:inbox(owner.access()).path("items"))if("ADMIN_MESSAGE".equals(n.path("kind").asString()))messages++;
+        assertEquals(1,messages,"a retried request sends nothing twice");
+        assertEquals(204,call("POST","/api/v1/notifications/read-all",null,owner.access()).status());
+        assertEquals(0,inbox(owner.access()).path("unread").asLong());
+    }
     Response sellProducts(String access,UUID request,String scanId,String productId,int quantity) throws Exception {
         return call("POST","/api/v1/partner/sales",Map.of("requestId",request,"scanId",scanId,"kind","PRODUCTS",
             "lines",List.of(Map.of("productId",productId,"quantity",quantity))),access);
@@ -1475,7 +1717,6 @@ class PartnerJourneyTest {
         assertEquals(201,walletPost("/api/v1/admin/wallets/"+partnerId+"/topups",root,10000,UUID.randomUUID(),"CASH").status());
         assertEquals("DISCOUNT_BELOW_MINIMUM",sellFree(owner.access(),UUID.randomUUID(),scan,100000,5,null).text("code"));
         assertEquals("POINTS_BELOW_MINIMUM",sellFree(owner.access(),UUID.randomUUID(),scan,100000,null,1999).text("code"));
-        assertEquals("POINTS_ABOVE_TOTAL",sellFree(owner.access(),UUID.randomUUID(),scan,1000,null,1001).text("code"));
 
         var defaults=sellFree(owner.access(),UUID.randomUUID(),scan,100000,null,null);
         assertEquals(201,defaults.status(),defaults.json().toString());

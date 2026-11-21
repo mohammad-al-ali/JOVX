@@ -18,7 +18,7 @@ class ModularArchitectureTest {
         new ClassFileImporter().importPackages("com.jovx.api");
 
     /** Business modules that follow controller/service/repository/model/dto layering. */
-    private static final List<String> MODULES = List.of("partners", "membership", "points", "releases", "wallets", "catalog", "sales");
+    private static final List<String> MODULES = List.of("partners", "membership", "points", "releases", "wallets", "catalog", "sales", "notifications");
 
     /** The only endpoints reachable without a role/permission check (decided by the product owner). */
     private static final Set<String> PUBLIC_OR_SESSION_ONLY = Set.of(
@@ -27,7 +27,7 @@ class ModularArchitectureTest {
         "MemberController#claim", "MemberController#publicPlans",
         "PublicPartnerController#partners", "ReferenceDefaultsController#publicDefaults",
         "ReleaseController#check",
-        "CatalogController#publicCategories", "CatalogController#publicProducts", "CatalogController#image");
+        "CatalogController#publicCategories", "CatalogController#publicProducts","CatalogController#publicSearch", "CatalogController#image");
 
     @Test void everyModuleKeepsSqlInRepositoriesAndTransportOutOfModels() {
         for (String m : MODULES) {

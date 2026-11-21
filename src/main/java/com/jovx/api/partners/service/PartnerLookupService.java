@@ -40,6 +40,14 @@ public class PartnerLookupService implements PartnerLookup {
     return repository.stores(partner);
   }
 
+  public Optional<UUID> ownerAccount(UUID partnerId) {
+    return repository.ownerAccount(partnerId);
+  }
+
+  public List<ListedStore> listedStores() {
+    return repository.listedStores();
+  }
+
   public Set<UUID> employeeStores(UUID employee) {
     return repository.employeeStores(employee);
   }

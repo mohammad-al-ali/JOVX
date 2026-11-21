@@ -1,6 +1,7 @@
 package com.jovx.api.sales.controller;
 
 import com.jovx.api.sales.dto.SalesDtos.*;
+import com.jovx.api.sales.service.SaleCancellationService;
 import com.jovx.api.sales.service.SaleService;
 import com.jovx.api.sales.service.SalesReadService;
 import jakarta.validation.Valid;
@@ -18,9 +19,10 @@ public class SalesController {
   private static final String PARTNER_SIDE = "hasRole('PARTNER') or hasRole('PARTNER_EMPLOYEE')";
   private final SaleService sales;
   private final SalesReadService reads;
+  private final SaleCancellationService cancellations;
 
-  public SalesController(SaleService sales, SalesReadService reads) {
-    this.sales = sales; this.reads = reads;
+  public SalesController(SaleService sales, SalesReadService reads, SaleCancellationService cancellations) {
+    this.sales = sales; this.reads = reads; this.cancellations = cancellations;
   }
 
   @GetMapping("/api/v1/partner/sales/context")
@@ -68,6 +70,32 @@ public class SalesController {
   @PreAuthorize("hasRole('PARTNER') or hasAuthority('sale.read.own') or hasAuthority('sale.read.branch')")
   public SaleView receipt(JwtAuthenticationToken a, @PathVariable UUID saleId) {
     return reads.receipt(id(a), sid(a), role(a), saleId);
+  }
+
+  @PostMapping("/api/v1/partner/sales/{saleId}/cancellation")
+  @ResponseStatus(HttpStatus.CREATED)
+  @PreAuthorize("hasRole('PARTNER') or hasAuthority('sale.confirm') or hasAuthority('sale.free')")
+  public SaleView requestCancellation(
+      JwtAuthenticationToken a, @PathVariable UUID saleId, @Valid @RequestBody(required = false) CancelRequest body) {
+    return cancellations.request(id(a), sid(a), role(a), saleId, body);
+  }
+
+  @GetMapping("/api/v1/member/cancellations")
+  @PreAuthorize("hasRole('MEMBER')")
+  public List<SaleView> awaitingCancellations(JwtAuthenticationToken a) {
+    return cancellations.awaiting(id(a), sid(a));
+  }
+
+  @PostMapping("/api/v1/member/cancellations/{cancellationId}/accept")
+  @PreAuthorize("hasRole('MEMBER')")
+  public SaleView acceptCancellation(JwtAuthenticationToken a, @PathVariable UUID cancellationId) {
+    return cancellations.decide(id(a), sid(a), cancellationId, true);
+  }
+
+  @PostMapping("/api/v1/member/cancellations/{cancellationId}/reject")
+  @PreAuthorize("hasRole('MEMBER')")
+  public SaleView rejectCancellation(JwtAuthenticationToken a, @PathVariable UUID cancellationId) {
+    return cancellations.decide(id(a), sid(a), cancellationId, false);
   }
 
   @GetMapping("/api/v1/member/purchases")

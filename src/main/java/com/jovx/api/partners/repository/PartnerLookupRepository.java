@@ -1,5 +1,6 @@
 package com.jovx.api.partners.repository;
 
+import com.jovx.api.partners.api.PartnerLookup.ListedStore;
 import com.jovx.api.partners.api.PartnerLookup.PartnerRef;
 import com.jovx.api.partners.api.PartnerLookup.StoreRef;
 import java.sql.ResultSet;
@@ -48,6 +49,20 @@ public final class PartnerLookupRepository {
 
   public List<StoreRef> stores(UUID partner) {
     return jdbc.query(STORE + "WHERE partner_id=? ORDER BY name,id", (r, i) -> storeRef(r), partner.toString());
+  }
+
+  public Optional<UUID> ownerAccount(UUID partner) {
+    return jdbc.queryForList("SELECT account_id FROM partner_owners WHERE id=?", String.class, partner.toString())
+        .stream().findFirst().map(v -> UUID.fromString(v.strip()));
+  }
+
+  public List<ListedStore> listedStores() {
+    return jdbc.query(
+        "SELECT s.id,s.partner_id,s.name,s.city_id,c.name,p.minimum_discount_percent FROM partner_stores s"
+            + " JOIN partner_owners p ON p.id=s.partner_id JOIN cities c ON c.id=s.city_id"
+            + " WHERE s.status='ACTIVE' AND p.status='ACTIVE' ORDER BY s.name,s.id",
+        (r, i) -> new ListedStore(UUID.fromString(r.getString(1).strip()), UUID.fromString(r.getString(2).strip()),
+            r.getString(3), UUID.fromString(r.getString(4).strip()), r.getString(5), r.getBigDecimal(6)));
   }
 
   public Set<UUID> employeeStores(UUID employee) {

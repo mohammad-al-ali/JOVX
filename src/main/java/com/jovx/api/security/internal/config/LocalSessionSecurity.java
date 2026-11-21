@@ -89,7 +89,7 @@ public class LocalSessionSecurity {
                 .requestMatchers(org.springframework.http.HttpMethod.GET,"/api/v1/app-updates").permitAll()
                 // Guest browsing and first-PIN card claim (plan decision 44); the claim is rate limited.
                 .requestMatchers(org.springframework.http.HttpMethod.GET,"/api/v1/public/partners","/api/v1/public/membership-plans","/api/v1/public/location-defaults",
-                    "/api/v1/public/product-categories","/api/v1/public/stores/*/products","/api/v1/public/images/products/*/*").permitAll()
+                    "/api/v1/public/product-categories","/api/v1/public/products","/api/v1/public/stores/*/products","/api/v1/public/images/products/*/*").permitAll()
                 .requestMatchers(org.springframework.http.HttpMethod.POST,"/api/v1/member/claim").permitAll()
                 // Every other API route needs a valid session. Each controller still declares its own
                 // role/permission with @PreAuthorize (enforced by ModularArchitectureTest), so adding an

@@ -71,6 +71,27 @@ public final class WalletRepository {
         sale.toString(), actor.toString(), ts(now));
   }
 
+  public void creditForCancelledSale(Wallet locked, long points, UUID sale, UUID actor, Instant now) {
+    if (points <= 0) throw new IllegalStateException("Returned points must be positive");
+    long balance = locked.balance() + points;
+    jdbc.update("UPDATE partner_wallets SET balance=?,updated_at=? WHERE partner_id=?", balance, ts(now), locked.partnerId().toString());
+    jdbc.update("INSERT INTO wallet_ledger(id,partner_id,delta,balance_after,kind,reference_id,actor_id,created_at) VALUES (?,?,?,?,?,?,?,?)",
+        UUID.randomUUID().toString(), locked.partnerId().toString(), points, balance, LedgerKind.SALE_POINTS_RETURNED.name(),
+        sale.toString(), actor.toString(), ts(now));
+  }
+
+  /** Spendable balance; 0 before the first movement. */
+  public long balance(UUID partner) {
+    var rows = jdbc.queryForList("SELECT balance FROM partner_wallets WHERE partner_id=?", Long.class, partner.toString());
+    return rows.isEmpty() ? 0 : rows.getFirst();
+  }
+
+  /** False when this partner was already alerted that day. */
+  public boolean recordLowBalanceAlert(UUID partner, java.time.LocalDate day, long balance) {
+    return jdbc.update("INSERT INTO wallet_low_balance_alerts(partner_id,alert_date,balance) VALUES (?,?,?)"
+        + " ON CONFLICT DO NOTHING", partner.toString(), java.sql.Date.valueOf(day), balance) == 1;
+  }
+
   public List<LedgerEntry> ledger(UUID partner, int limit) {
     return jdbc.query("SELECT id,delta,balance_after,kind,wallet_request_id,actor_id,created_at FROM wallet_ledger"
             + " WHERE partner_id=? ORDER BY created_at DESC,id DESC LIMIT ?",

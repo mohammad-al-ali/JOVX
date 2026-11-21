@@ -6,4 +6,7 @@ import java.util.UUID;
 public interface PartnerAccountProvisioning {
     UUID createPending(String name, String phone, String pin);
     void activate(UUID accountId);
+
+    /** Administrative reset of a forgotten PIN: replaces it, clears lockout and revokes every session. */
+    void resetPin(UUID accountId, String pin);
 }

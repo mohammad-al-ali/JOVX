@@ -51,7 +51,11 @@ public final class CatalogDtos {
   /** For members and guests: only what is shown in the store. */
   public record PublicProductView(
       UUID id, String name, String description, String categoryName, long priceAmount, long memberPriceAmount,
-      String currency, long points, boolean outOfStock, List<String> imageUrls) {}
+      String currency, long points, boolean outOfStock, List<String> imageUrls,
+      UUID storeId, String storeName, String cityName) {}
+
+  /** One page of public search results; total counts every match. */
+  public record PublicProductPage(long total, int offset, int limit, List<PublicProductView> items) {}
 
   /** Image upload result; the product went back to review. */
   public record ImageUploadResult(ProductView product) {}

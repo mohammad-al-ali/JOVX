@@ -24,12 +24,13 @@ import org.springframework.transaction.support.TransactionTemplate;
 @Service
 @Profile("local-postgres")
 public class PartnerManagementService {
-  static final String CREATE = "partner.create", STORES = "partner.store.manage";
+  static final String CREATE = "partner.create", STORES = "partner.store.manage", PIN_RESET = "partner.pin.reset";
   private final PartnerRepository repository;
   private final TransactionTemplate tx;
   private final AdministrationAccess admin;
   private final ActorAccess actors;
   private final AccountDirectory directory;
+  private final PartnerAccountProvisioning accounts;
   private final Clock clock;
 
   public PartnerManagementService(
@@ -38,12 +39,14 @@ public class PartnerManagementService {
       AdministrationAccess admin,
       ActorAccess actors,
       AccountDirectory directory,
+      PartnerAccountProvisioning accounts,
       Clock clock) {
     this.repository = repository;
     this.tx = tx;
     this.admin = admin;
     this.actors = actors;
     this.directory = directory;
+    this.accounts = accounts;
     this.clock = clock;
   }
 
@@ -98,6 +101,20 @@ public class PartnerManagementService {
             throw error(Kind.INVALID, "INVALID_DISCOUNT_PRECISION");
           repository.updateDiscount(owner.id(), value);
           repository.audit(owner.id(), actor, "DISCOUNT_CHANGED", clock.instant());
+        });
+  }
+
+  /**
+   * Forgotten-PIN reset by SUPER_ADMIN or an ADMIN holding partner.pin.reset (partner.create alone
+   * does not suffice). Every session of the partner is revoked; the new PIN is never echoed.
+   */
+  public void resetPin(UUID actor, UUID sid, UUID partner, String pin) {
+    tx.executeWithoutResult(
+        s -> {
+          admin.require(actor, sid, PIN_RESET);
+          var owner = owner(partner, true);
+          accounts.resetPin(owner.accountId(), pin);
+          repository.audit(owner.id(), actor, "PIN_RESET", clock.instant());
         });
   }
 

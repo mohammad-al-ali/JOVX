@@ -205,19 +205,64 @@ public class CatalogService {
 
   // ---- public ----
 
+  /** Every visible product of one store, by name; 404 when the store or its partner is not active. */
   public List<PublicProductView> publicStoreProducts(UUID storeId) {
-    var store = partners.store(storeId).orElseThrow(() -> fail(Kind.NOT_FOUND, "STORE_NOT_FOUND"));
-    var partner = partners.byId(store.partnerId()).orElseThrow(() -> fail(Kind.NOT_FOUND, "STORE_NOT_FOUND"));
-    if (!store.active() || !partner.active()) throw fail(Kind.NOT_FOUND, "STORE_NOT_FOUND");
+    var store = partners.listedStores().stream().filter(st -> st.id().equals(storeId)).findFirst()
+        .orElseThrow(() -> fail(Kind.NOT_FOUND, "STORE_NOT_FOUND"));
     var products = repository.storeProducts(storeId).stream()
         .filter(p -> Rules.visibleToMembers(p, true, true)).toList();
-    var stored = repository.images(products.stream().map(Product::id).toList());
+    return publicViews(products.stream()
+        .map(p -> new SearchHit(p, Rules.effectiveMemberPrice(p, store.minimumDiscountPercent()))).toList(),
+        Map.of(store.id(), store));
+  }
+
+  /**
+   * Search, filter and sort across every listed store (members and guests). Inputs arrive raw from
+   * the query string and are validated here so every bad value answers INVALID_QUERY.
+   */
+  public PublicProductPage publicSearch(String text, UUID categoryId, UUID cityId, UUID storeId, Long minPrice,
+      Long maxPrice, Boolean inStockOnly, String sort, Integer offset, Integer limit) {
+    int size = limit == null ? ProductSearch.DEFAULT_LIMIT : limit;
+    int from = offset == null ? 0 : offset;
+    String normalized = ArabicText.normalize(text);
+    ProductSort order;
+    try {
+      order = sort == null || sort.isBlank() ? ProductSort.NEWEST : ProductSort.valueOf(sort.strip());
+    } catch (IllegalArgumentException e) {
+      throw fail(Kind.INVALID, "INVALID_QUERY");
+    }
+    if (size < 1 || size > ProductSearch.MAX_LIMIT || from < 0 || from > ProductSearch.MAX_OFFSET
+        || normalized.length() > ProductSearch.MAX_TEXT
+        || (minPrice != null && minPrice < 0) || (maxPrice != null && maxPrice < 0)
+        || (minPrice != null && maxPrice != null && minPrice > maxPrice))
+      throw fail(Kind.INVALID, "INVALID_QUERY");
+    var q = new ProductSearch(normalized, categoryId, cityId, storeId, minPrice, maxPrice,
+        Boolean.TRUE.equals(inStockOnly), order, from, size);
+
+    var stores = new LinkedHashMap<UUID, PartnerLookup.ListedStore>();
+    for (var st : partners.listedStores())
+      if ((cityId == null || st.cityId().equals(cityId)) && (storeId == null || st.id().equals(storeId)))
+        stores.put(st.id(), st);
+    if (stores.isEmpty()) return new PublicProductPage(0, from, size, List.of());
+    var matching = normalized.isEmpty() ? List.<UUID>of() : stores.values().stream()
+        .filter(st -> ArabicText.normalize(st.name()).contains(normalized)).map(PartnerLookup.ListedStore::id).toList();
+    var ids = List.copyOf(stores.keySet());
+    var page = repository.search(ids, ids.stream().map(id -> stores.get(id).minimumDiscountPercent()).toList(), q, matching);
+    return new PublicProductPage(page.total(), from, size, publicViews(page.hits(), stores));
+  }
+
+  private List<PublicProductView> publicViews(List<SearchHit> hits, Map<UUID, PartnerLookup.ListedStore> stores) {
+    var stored = repository.images(hits.stream().map(h -> h.product().id()).toList());
     var categories = categoryNames();
-    return products.stream().map(p -> new PublicProductView(p.id(), p.name(), p.description(),
-        categories.getOrDefault(p.categoryId(), ""), p.priceAmount(),
-        Rules.effectiveMemberPrice(p, partner.minimumDiscountPercent()), p.currency(), p.points(),
-        p.stockTracked() && p.stock() != null && p.stock() == 0,
-        stored.getOrDefault(p.id(), List.of()).stream().map(i -> images.publicUrl(i.objectKey())).toList())).toList();
+    return hits.stream().map(h -> {
+      var p = h.product();
+      var store = stores.get(p.storeId());
+      return new PublicProductView(p.id(), p.name(), p.description(), categories.getOrDefault(p.categoryId(), ""),
+          p.priceAmount(), h.memberPrice(), p.currency(), p.points(),
+          p.stockTracked() && p.stock() != null && p.stock() == 0,
+          stored.getOrDefault(p.id(), List.of()).stream().map(i -> images.publicUrl(i.objectKey())).toList(),
+          p.storeId(), store.name(), store.cityName());
+    }).toList();
   }
 
   public Optional<byte[]> localImage(String key) {

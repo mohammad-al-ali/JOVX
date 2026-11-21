@@ -14,6 +14,9 @@ public interface ProductSales {
   /** Lowers tracked stock after {@link #lockForSale}; the caller already checked the quantity. */
   void takeStock(UUID productId, int quantity, Instant now);
 
+  /** A cancelled sale gives its quantity back to a tracked stock (deleted products are skipped). */
+  void returnStock(UUID productId, int quantity, Instant now);
+
   /**
    * memberPrice: custom, or automatic from the partner's minimum discount (decision 65).
    * stock: null when not tracked. sellable: approved and shown (decision 66).

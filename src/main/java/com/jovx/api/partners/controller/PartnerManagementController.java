@@ -20,6 +20,7 @@ public class PartnerManagementController {
   private static final String ADMIN_CREATE = "hasRole('SUPER_ADMIN') or hasAuthority('partner.create')";
   private static final String ADMIN_STORES =
       "hasRole('SUPER_ADMIN') or hasAuthority('partner.store.manage')";
+  private static final String ADMIN_PIN = "hasRole('SUPER_ADMIN') or hasAuthority('partner.pin.reset')";
   private static final String OWNER = "hasRole('PARTNER')";
   private final PartnerManagementService partners;
 
@@ -53,6 +54,16 @@ public class PartnerManagementController {
       @PathVariable UUID partnerId,
       @Valid @RequestBody DiscountRequest body) {
     partners.discount(id(actor), sid(actor), partnerId, body.discountPercent());
+  }
+
+  @PutMapping("/api/v1/admin/partners/{partnerId}/pin")
+  @ResponseStatus(HttpStatus.NO_CONTENT)
+  @PreAuthorize(ADMIN_PIN)
+  public void resetPin(
+      JwtAuthenticationToken actor,
+      @PathVariable UUID partnerId,
+      @Valid @RequestBody EmployeePinRequest body) {
+    partners.resetPin(id(actor), sid(actor), partnerId, body.pin());
   }
 
   @PostMapping("/api/v1/admin/partners/{partnerId}/stores")
