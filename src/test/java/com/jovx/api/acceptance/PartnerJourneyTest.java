@@ -1385,4 +1385,189 @@ class PartnerJourneyTest {
         assertEquals(409,again.status());assertEquals("CARD_NOT_AVAILABLE",again.text("code"));
         assertEquals(204,claim(code,phone,"048291").status());
     }
+
+    // ---- point of sale (plan decisions 6-17, 39-41, 70-73) ----
+    String approvedProduct(String root,Partner owner,long price,long points,Integer stock) throws Exception {
+        var created=createProduct(owner,UUID.randomUUID(),productBody(price,null,points,stock!=null,stock));
+        assertEquals(201,created.status(),created.json().toString());
+        assertEquals("APPROVED",call("POST","/api/v1/admin/catalog/products/"+created.text("id")+"/approve",null,root).text("reviewStatus"));
+        return created.text("id");
+    }
+    Response scanMember(String access,Partner owner,String code) throws Exception {
+        return call("POST","/api/v1/partner/sales/scans",Map.of("storeId",owner.created().text("storeId"),"code",code),access);
+    }
+    Response sellProducts(String access,UUID request,String scanId,String productId,int quantity) throws Exception {
+        return call("POST","/api/v1/partner/sales",Map.of("requestId",request,"scanId",scanId,"kind","PRODUCTS",
+            "lines",List.of(Map.of("productId",productId,"quantity",quantity))),access);
+    }
+    Response sellFree(String access,UUID request,String scanId,long gross,Object percent,Object points) throws Exception {
+        var body=new LinkedHashMap<String,Object>();body.put("requestId",request);body.put("scanId",scanId);body.put("kind","FREE");
+        body.put("grossAmount",gross);body.put("discountPercent",percent);body.put("points",points);
+        return call("POST","/api/v1/partner/sales",body,access);
+    }
+    long memberPoints(String memberId){
+        var rows=jdbc.queryForList("SELECT balance FROM points_accounts WHERE member_account_id=?",Long.class,memberId);
+        return rows.isEmpty()?0:rows.getFirst();
+    }
+
+    @Test void productInvoiceDebitsTheWalletCreditsTheMemberAndTakesStockOnce() throws Exception {
+        String root=superAccess();var owner=partner();String partnerId=owner.created().text("partnerId");
+        var m=claimedMember(root,plan(root,"نقطة بيع "+UUID.randomUUID(),6,true));
+        String product=approvedProduct(root,owner,10000,200,5);
+        assertEquals(201,walletPost("/api/v1/admin/wallets/"+partnerId+"/topups",root,10000,UUID.randomUUID(),"CASH").status());
+        var member=login(m.phone(),"048291");
+        String token=call("POST","/api/v1/member/scan-token",null,member.access()).text("token");
+
+        var scan=scanMember(owner.access(),owner,token);
+        assertEquals(201,scan.status(),scan.json().toString());
+        assertEquals("عضو اختبار",scan.json().path("member").path("name").asString());
+        assertTrue(scan.json().path("member").path("memberNumber").asString().startsWith("JVX-"));
+        assertEquals(TIME.instant().plus(Duration.ofMinutes(5)),instantOf(scan,"expiresAt"));
+        var reused=scanMember(owner.access(),owner,token);
+        assertEquals(400,reused.status());assertEquals("MEMBER_SCAN_INVALID",reused.text("code"),"a QR works once");
+
+        var picker=call("GET","/api/v1/partner/sales/stores/"+owner.created().text("storeId")+"/products",null,owner.access());
+        assertEquals(1,picker.json().size());assertEquals(9000,picker.json().get(0).path("memberPrice").asLong());
+
+        UUID request=UUID.randomUUID();
+        var sale=sellProducts(owner.access(),request,scan.text("scanId"),product,2);
+        assertEquals(201,sale.status(),sale.json().toString());
+        assertEquals(20000,sale.json().path("grossAmount").asLong());assertEquals(18000,sale.json().path("netAmount").asLong());
+        assertEquals(2000,sale.json().path("discountAmount").asLong(),"the member's saving");
+        assertEquals(400,sale.json().path("points").asLong());
+        assertEquals(9600,walletBalance(partnerId));assertEquals(400,memberPoints(m.id()));
+        assertEquals(3,jdbc.queryForObject("SELECT stock FROM products WHERE id=?",Integer.class,product));
+        assertEquals(1,jdbc.queryForObject("SELECT COUNT(*) FROM wallet_ledger WHERE partner_id=? AND kind='SALE_POINTS' AND delta=-400 AND reference_id=?",
+            Integer.class,partnerId,sale.text("id")));
+
+        var replay=sellProducts(owner.access(),request,scan.text("scanId"),product,2);
+        assertEquals(sale.text("id"),replay.text("id"),"a retried submit returns the first sale");
+        assertEquals(9600,walletBalance(partnerId),"and changes nothing");
+        var different=sellProducts(owner.access(),request,scan.text("scanId"),product,1);
+        assertEquals(409,different.status());assertEquals("REQUEST_ID_REUSED",different.text("code"));
+        var second=sellProducts(owner.access(),UUID.randomUUID(),scan.text("scanId"),product,1);
+        assertEquals(409,second.status());assertEquals("SCAN_ALREADY_USED",second.text("code"),"one scan, one invoice");
+
+        var cardScan=scanMember(owner.access(),owner,m.code());
+        assertEquals(201,cardScan.status(),"the printed card has no scan limit");
+        var tooMany=sellProducts(owner.access(),UUID.randomUUID(),cardScan.text("scanId"),product,4);
+        assertEquals(409,tooMany.status());assertEquals("OUT_OF_STOCK",tooMany.text("code"));
+        assertEquals(3,jdbc.queryForObject("SELECT stock FROM products WHERE id=?",Integer.class,product));
+
+        var purchases=call("GET","/api/v1/member/purchases",null,member.access());
+        assertEquals(200,purchases.status());assertEquals(2000,purchases.json().path("totalSavings").asLong());
+        assertEquals(1,purchases.json().path("items").size());
+        assertEquals(2,purchases.json().path("items").get(0).path("lines").get(0).path("quantity").asInt());
+        assertEquals("SALE",call("GET","/api/v1/member/points/history",null,member.access()).json().get(0).path("kind").asString());
+    }
+
+    @Test void freeSaleKeepsTheMinimumDiscountAndPointsAndAShortWalletChangesNothing() throws Exception {
+        String root=superAccess();var owner=partner();String partnerId=owner.created().text("partnerId");
+        var m=claimedMember(root,plan(root,"بيع حر "+UUID.randomUUID(),6,true));
+        assertEquals(201,walletPost("/api/v1/admin/wallets/"+partnerId+"/topups",root,1000,UUID.randomUUID(),"CASH").status());
+        String scan=scanMember(owner.access(),owner,m.code()).text("scanId");
+
+        var short_=sellFree(owner.access(),UUID.randomUUID(),scan,100000,null,null);
+        assertEquals(409,short_.status());assertEquals("INSUFFICIENT_WALLET_BALANCE",short_.text("code"));
+        assertEquals(1000,walletBalance(partnerId));assertEquals(0,memberPoints(m.id()));
+        assertNull(jdbc.queryForObject("SELECT consumed_at FROM sale_scans WHERE id=?",java.sql.Timestamp.class,scan),"the scan is still usable");
+
+        assertEquals(201,walletPost("/api/v1/admin/wallets/"+partnerId+"/topups",root,10000,UUID.randomUUID(),"CASH").status());
+        assertEquals("DISCOUNT_BELOW_MINIMUM",sellFree(owner.access(),UUID.randomUUID(),scan,100000,5,null).text("code"));
+        assertEquals("POINTS_BELOW_MINIMUM",sellFree(owner.access(),UUID.randomUUID(),scan,100000,null,1999).text("code"));
+        assertEquals("POINTS_ABOVE_TOTAL",sellFree(owner.access(),UUID.randomUUID(),scan,1000,null,1001).text("code"));
+
+        var defaults=sellFree(owner.access(),UUID.randomUUID(),scan,100000,null,null);
+        assertEquals(201,defaults.status(),defaults.json().toString());
+        assertEquals(10000,defaults.json().path("discountAmount").asLong(),"decision 6: 100,000 at 10%");
+        assertEquals(90000,defaults.json().path("netAmount").asLong());assertEquals(2000,defaults.json().path("points").asLong());
+        assertEquals(9000,walletBalance(partnerId));assertEquals(2000,memberPoints(m.id()));
+
+        String next=scanMember(owner.access(),owner,m.code()).text("scanId");
+        var raised=sellFree(owner.access(),UUID.randomUUID(),next,12345,15,300);
+        assertEquals(201,raised.status());assertEquals(1852,raised.json().path("discountAmount").asLong(),"15% of 12,345 = 1,851.75");
+        assertEquals(10493,raised.json().path("netAmount").asLong());assertEquals(300,raised.json().path("points").asLong());
+
+        String late=scanMember(owner.access(),owner,m.code()).text("scanId");
+        TIME.advance(Duration.ofMinutes(5));
+        var expired=sellFree(owner.access(),UUID.randomUUID(),late,1000,null,null);
+        assertEquals(409,expired.status());assertEquals("SCAN_EXPIRED",expired.text("code"));
+
+        var summary=call("GET","/api/v1/partner/sales/summary?days=7",null,owner.access());
+        assertEquals(200,summary.status());assertEquals(2,summary.json().path("sales").asLong());
+        assertEquals(1,summary.json().path("customers").asLong());assertEquals(2300,summary.json().path("points").asLong());
+    }
+
+    @Test void stoppedCardsAndEndedMembershipsCannotBuy() throws Exception {
+        String root=superAccess();var owner=partner();
+        var m=claimedMember(root,plan(root,"منتهية "+UUID.randomUUID(),6,true));
+        assertEquals("MEMBER_SCAN_INVALID",scanMember(owner.access(),owner,"UNKNOWN-CARD-9").text("code"));
+        assertEquals("MEMBER_SCAN_INVALID",scanMember(owner.access(),owner,"JX2.not-a-real-token").text("code"));
+        String scan=scanMember(owner.access(),owner,m.code()).text("scanId");
+        assertEquals(204,call("POST","/api/v1/admin/members/"+m.id()+"/card/suspension",null,root).status());
+        assertEquals("CARD_NOT_ACTIVE",scanMember(owner.access(),owner,m.code()).text("code"));
+        assertEquals("CARD_NOT_ACTIVE",sellFree(owner.access(),UUID.randomUUID(),scan,1000,null,null).text("code"),"checked again at the sale");
+
+        var other=claimedMember(root,plan(root,"منتهية 2 "+UUID.randomUUID(),6,true));
+        TIME.advance(Duration.ofDays(200));
+        var later=partner();
+        var ended=scanMember(later.access(),later,other.code());
+        assertEquals(409,ended.status());assertEquals("MEMBERSHIP_EXPIRED",ended.text("code"));
+    }
+
+    @Test void employeesSellOnlyWithTheirGrantsInTheirStoresAndReadOnlyTheirScope() throws Exception {
+        String root=superAccess();var owner=partner();String partnerId=owner.created().text("partnerId");
+        var m=claimedMember(root,plan(root,"كاشير "+UUID.randomUUID(),6,true));
+        String product=approvedProduct(root,owner,5000,100,null);
+        assertEquals(201,walletPost("/api/v1/admin/wallets/"+partnerId+"/topups",root,5000,UUID.randomUUID(),"CASH").status());
+        String phone=nextPhone();
+        assertEquals(201,employee(owner,phone,Set.of("member.scan","sale.confirm","sale.read.own")).status());
+        String cashier=login(phone,"012345").access();
+
+        var context=call("GET","/api/v1/partner/sales/context",null,cashier);
+        assertEquals(200,context.status());
+        assertTrue(context.json().path("can").path("scan").asBoolean());assertTrue(context.json().path("can").path("sellProducts").asBoolean());
+        assertFalse(context.json().path("can").path("freeSale").asBoolean());assertFalse(context.json().path("can").path("reports").asBoolean());
+        assertEquals(1,context.json().path("stores").size());
+
+        String scan=scanMember(cashier,owner,m.code()).text("scanId");
+        assertEquals(403,sellFree(cashier,UUID.randomUUID(),scan,1000,null,null).status(),"free sale needs its own grant (decision 13)");
+        var sold=sellProducts(cashier,UUID.randomUUID(),scan,product,1);
+        assertEquals(201,sold.status(),sold.json().toString());
+        assertEquals("موظف اختبار",sold.text("sellerName"));
+        var ownerScan=scanMember(owner.access(),owner,m.code()).text("scanId");
+        assertEquals(404,sellProducts(cashier,UUID.randomUUID(),ownerScan,product,1).status(),"a scan belongs to the seller who made it");
+        var ownerSold=sellProducts(owner.access(),UUID.randomUUID(),ownerScan,product,1);
+        assertEquals(201,ownerSold.status());
+
+        assertEquals(1,call("GET","/api/v1/partner/sales",null,cashier).json().size(),"own sales only");
+        assertEquals(2,call("GET","/api/v1/partner/sales",null,owner.access()).json().size());
+        assertEquals(403,call("GET","/api/v1/partner/sales/summary",null,cashier).status());
+        assertEquals(404,call("GET","/api/v1/partner/sales/"+ownerSold.text("id"),null,cashier).status());
+        assertEquals(200,call("GET","/api/v1/partner/sales/"+sold.text("id"),null,cashier).status());
+
+        var stranger=partner();
+        assertEquals(404,scanMember(stranger.access(),owner,m.code()).status(),"another partner's store is not found");
+        assertEquals(0,call("GET","/api/v1/partner/sales",null,stranger.access()).json().size());
+        var member=login(m.phone(),"048291");
+        assertEquals(403,call("GET","/api/v1/partner/sales",null,member.access()).status());
+    }
+
+    @Test void concurrentSubmitsOfOneInvoiceSellOnce() throws Exception {
+        String root=superAccess();var owner=partner();String partnerId=owner.created().text("partnerId");
+        var m=claimedMember(root,plan(root,"تزامن "+UUID.randomUUID(),6,true));
+        assertEquals(201,walletPost("/api/v1/admin/wallets/"+partnerId+"/topups",root,10000,UUID.randomUUID(),"CASH").status());
+        String scan=scanMember(owner.access(),owner,m.code()).text("scanId");
+        UUID request=UUID.randomUUID();
+        var pool=Executors.newFixedThreadPool(4);
+        try {
+            var results=new ArrayList<Future<Response>>();
+            for(int i=0;i<4;i++)results.add(pool.submit(()->sellFree(owner.access(),request,scan,50000,null,null)));
+            var ids=new HashSet<String>();
+            for(var f:results){var r=f.get();assertEquals(201,r.status(),r.json().toString());ids.add(r.text("id"));}
+            assertEquals(1,ids.size());
+        } finally {pool.shutdownNow();}
+        assertEquals(9000,walletBalance(partnerId));assertEquals(1000,memberPoints(m.id()));
+        assertEquals(1,jdbc.queryForObject("SELECT COUNT(*) FROM sales WHERE partner_id=?",Integer.class,partnerId));
+    }
 }

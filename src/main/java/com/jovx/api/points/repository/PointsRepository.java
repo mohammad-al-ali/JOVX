@@ -22,6 +22,21 @@ public final class PointsRepository {
     return rows.isEmpty() ? 0 : rows.getFirst();
   }
 
+  /** Creates the account on first use and locks it for the caller's transaction; returns the balance. */
+  public long lockAccount(UUID member, Instant now) {
+    jdbc.update("INSERT INTO points_accounts(member_account_id,balance,updated_at) VALUES (?,0,?) ON CONFLICT (member_account_id) DO NOTHING",
+        member.toString(), java.sql.Timestamp.from(now));
+    return jdbc.queryForObject("SELECT balance FROM points_accounts WHERE member_account_id=? FOR UPDATE", Long.class, member.toString());
+  }
+
+  /** Sets the new balance and appends the matching ledger row. */
+  public void append(UUID member, long delta, long balanceAfter, String kind, UUID reference, Instant now) {
+    var at = java.sql.Timestamp.from(now);
+    jdbc.update("UPDATE points_accounts SET balance=?,updated_at=? WHERE member_account_id=?", balanceAfter, at, member.toString());
+    jdbc.update("INSERT INTO points_ledger(id,member_account_id,delta,balance_after,kind,reference_id,created_at) VALUES (?,?,?,?,?,?,?)",
+        UUID.randomUUID().toString(), member.toString(), delta, balanceAfter, kind, reference == null ? null : reference.toString(), at);
+  }
+
   public List<Entry> history(UUID member, int offset, int limit) {
     return jdbc.query(
         "SELECT id,delta,balance_after,kind,reference_id,created_at FROM points_ledger WHERE member_account_id=?"

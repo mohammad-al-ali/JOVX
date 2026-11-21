@@ -61,6 +61,16 @@ public final class WalletRepository {
           walletRequest == null ? null : walletRequest.toString(), actor.toString(), ts(now));
   }
 
+  /** Sale points: lowers the spendable balance of a locked wallet and records the sale reference. */
+  public void debitForSale(Wallet locked, long points, UUID sale, UUID actor, Instant now) {
+    long balance = locked.balance() - points;
+    if (points <= 0 || balance < 0) throw new IllegalStateException("Sale debit checked by the caller");
+    jdbc.update("UPDATE partner_wallets SET balance=?,updated_at=? WHERE partner_id=?", balance, ts(now), locked.partnerId().toString());
+    jdbc.update("INSERT INTO wallet_ledger(id,partner_id,delta,balance_after,kind,reference_id,actor_id,created_at) VALUES (?,?,?,?,?,?,?,?)",
+        UUID.randomUUID().toString(), locked.partnerId().toString(), -points, balance, LedgerKind.SALE_POINTS.name(),
+        sale.toString(), actor.toString(), ts(now));
+  }
+
   public List<LedgerEntry> ledger(UUID partner, int limit) {
     return jdbc.query("SELECT id,delta,balance_after,kind,wallet_request_id,actor_id,created_at FROM wallet_ledger"
             + " WHERE partner_id=? ORDER BY created_at DESC,id DESC LIMIT ?",

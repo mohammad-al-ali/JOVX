@@ -203,6 +203,26 @@ public final class MembershipRepository {
         digest, member.toString(), card.toString(), ts(now), ts(expires));
   }
 
+  /**
+   * Marks an unused, unexpired QR token as used in one statement, so two scanners racing on the
+   * same token cannot both succeed. Returns {member, card} or empty.
+   */
+  public Optional<UUID[]> consumeScanToken(String digest, Instant now) {
+    var rows = jdbc.query(
+        "UPDATE member_scan_tokens SET consumed_at=? WHERE token_digest=? AND consumed_at IS NULL AND expires_at>?"
+            + " RETURNING member_account_id,card_id",
+        (r, i) -> new UUID[] {uuid(r, 1), uuid(r, 2)}, ts(now), digest, ts(now));
+    return rows.isEmpty() ? Optional.empty() : Optional.of(rows.getFirst());
+  }
+
+  public Optional<Card> card(UUID id) {
+    return first(jdbc.query("SELECT " + CARD_COLUMNS + " FROM member_cards WHERE id=?", CARD, id.toString()));
+  }
+
+  public Optional<Card> cardByCode(String code) {
+    return first(jdbc.query("SELECT " + CARD_COLUMNS + " FROM member_cards WHERE code=?", CARD, code));
+  }
+
   public void dropScanTokens(UUID member) {
     jdbc.update("DELETE FROM member_scan_tokens WHERE member_account_id=? AND consumed_at IS NULL", member.toString());
   }

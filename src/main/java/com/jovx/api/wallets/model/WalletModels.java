@@ -13,7 +13,7 @@ public final class WalletModels {
   /** Decision 20: cash, transfer, Sham Cash, other — always with an optional reference. */
   public enum PaymentMethod { CASH, TRANSFER, SHAM_CASH, OTHER }
 
-  public enum LedgerKind { TOPUP_APPROVED, DIRECT_TOPUP, REFUND_HELD, REFUND_RELEASED }
+  public enum LedgerKind { TOPUP_APPROVED, DIRECT_TOPUP, REFUND_HELD, REFUND_RELEASED, SALE_POINTS }
 
   public record Wallet(UUID partnerId, long balance, long held) {}
 
